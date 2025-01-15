@@ -26,6 +26,7 @@
 #include "private.h"
 #include "tjs.h"
 #include "utils.h"
+#include "mod_sdl2.h"
 
 #include <string.h>
 
@@ -84,6 +85,9 @@ JSModuleDef *tjs_module_loader(JSContext *ctx, const char *module_name, void *op
     DynBuf dbuf;
 
     if (strncmp(tjs_prefix, module_name, strlen(tjs_prefix)) == 0) {
+        if (strcmp(module_name, "tjs:sdl") == 0) {
+            return tjs_init_module_sdl(ctx, module_name);
+        }
         return tjs__load_builtin(ctx, module_name);
     }
 
