@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.14)
 
 project(tjs LANGUAGES C)
 
+find_package(SDL2_ttf REQUIRED)
+
 include(ExternalProject)
 include(GNUInstallDirs)
 
@@ -18,9 +20,25 @@ set(CMAKE_C_STANDARD 11)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-list(APPEND tjs_cflags -Wall -g)
+# 修改编译标志设置
+list(APPEND tjs_cflags -Wall)
+
+# Debug模式编译选项
 if (CMAKE_BUILD_TYPE MATCHES "Debug")
-    list(APPEND tjs_cflags -ggdb -O0 -fno-omit-frame-pointer)
+    list(APPEND tjs_cflags
+        -g3                     # 生成最详细的调试信息
+        -ggdb3                  # 生成GDB专用的调试信息
+        -O0                     # 禁用优化
+        -fno-omit-frame-pointer # 保留栈帧指针
+        -DDEBUG                 # 定义DEBUG宏
+    )
+# Release模式编译选项
+else()
+    list(APPEND tjs_cflags
+        -O3                     # 最高级别优化
+        -DNDEBUG               # 定义NDEBUG宏
+        -fomit-frame-pointer   # 优化栈帧指针
+    )
 endif()
 
 set(TJS__VERSION_MAJOR 24)
@@ -162,7 +180,7 @@ string(TOLOWER ${CMAKE_SYSTEM_NAME} TJS_PLATFORM)
 target_compile_options(tjs PRIVATE ${tjs_cflags})
 target_compile_definitions(tjs PRIVATE TJS__PLATFORM="${TJS_PLATFORM}")
 target_include_directories(tjs PUBLIC src)
-target_link_libraries(tjs qjs uv_a m3 sqlite3 CURL::libcurl SDL2::SDL2)
+target_link_libraries(tjs qjs uv_a m3 sqlite3 CURL::libcurl SDL2::SDL2 SDL2_ttf)
 
 if (BUILD_WITH_MIMALLOC)
     target_compile_definitions(tjs PRIVATE TJS__HAS_MIMALLOC)
