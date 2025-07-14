@@ -5,6 +5,35 @@ project(tjs LANGUAGES C)
 include(ExternalProject)
 include(GNUInstallDirs)
 
+# Detect platform and architecture
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(PLATFORM "linux")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(PLATFORM "mac")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(PLATFORM "windows")
+endif()
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64")
+        set(ARCH "arm64")
+    else()
+        set(ARCH "x64")
+    endif()
+else()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+        set(ARCH "arm32")
+    else()
+        set(ARCH "x86")
+    endif()
+endif()
+
+# Set output directory
+set(OUTPUT_DIR "${PROJECT_SOURCE_DIR}/dist/${PLATFORM}-${ARCH}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_DIR})
+# set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${OUTPUT_DIR})
+
 if (NOT CMAKE_BUILD_TYPE)
     message(STATUS "No build type selected, default to Release")
     set(CMAKE_BUILD_TYPE "Release")
@@ -109,6 +138,7 @@ if(UNIX)
     target_sources(tjs PUBLIC src/mod_posix-socket.c)
 endif()
 
+if(BUILD_TEST)
 add_library(ffi-test SHARED
     tests/fixtures/ffi-test-lib.c
 )
@@ -118,7 +148,7 @@ add_library(sqlite-test SHARED
 )
 
 target_link_libraries(sqlite-test sqlite3)
-
+endif()
 
 if(NOT USE_EXTERNAL_FFI AND NOT MINGW AND NOT APPLE)
     set(LIBFFI_SRC "${CMAKE_CURRENT_SOURCE_DIR}/deps/libffi")
