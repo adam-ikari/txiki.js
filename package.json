@@ -4,7 +4,14 @@
   "description": "A small JavaScript runtime built on QuickJS",
   "private": false,
   "files": [
-    "dist"
+    "dist/linux-x64",
+    "dist/linux-arm64",
+    "dist/mac-x64",
+    "dist/mac-m1",
+    "dist/windows-x86",
+    "dist/windows-x64",
+    "dist/windows-arm32",
+    "dist/windows-arm64"
   ],
   "scripts": {
     "postinstall": "patch-package",
@@ -17,7 +24,7 @@
   "license": "MIT",
   "dependencies": {
     "abortcontroller-polyfill": "^1.7.5",
-    "compression-streams-polyfill": "^0.1.7",
+    "compression-streams-polyfill": "0.1.7",
     "getopts": "^2.3.0",
     "ipaddr.js": "^2.2.0",
     "js-md5": "^0.8.3",

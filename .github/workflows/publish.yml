@@ -2,29 +2,113 @@ name: Publish to npm
 
 on:
   push:
-    branches: [ master ]
+    branches: [ feat-ci ]
 
 jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+            dist_dir: linux-x64
+          - os: ubuntu-latest
+            arch: arm64
+            dist_dir: linux-arm64
+          - os: macos-latest
+            arch: x64
+            dist_dir: mac-x64
+          - os: macos-latest
+            arch: arm64
+            dist_dir: mac-m1
+          - os: windows-latest
+            arch: x86
+            dist_dir: windows-x86
+          - os: windows-latest
+            arch: x64
+            dist_dir: windows-x64
+          - os: windows-latest
+            arch: arm32
+            dist_dir: windows-arm32
+          - os: windows-latest
+            arch: arm64
+            dist_dir: windows-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup build environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      
+      - name: Install dependencies
+        run: npm install
+      
+      - name: Install build tools
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential cmake
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            fi
+          elif [ "${{ matrix.os }}" = "macos-latest" ]; then
+            brew install cmake
+          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
+            choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+            choco install make
+          fi
+      
+      - name: Build for target platform
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              export CC=aarch64-linux-gnu-gcc
+              export CXX=aarch64-linux-gnu-g++
+            fi
+          fi
+          
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          
+          mkdir -p ../dist/${{ matrix.dist_dir }}
+          cp tjs* ../dist/${{ matrix.dist_dir }}/
+      
+      - uses: actions/upload-artifact@v3
+        with:
+          name: binaries-${{ matrix.dist_dir }}
+          path: dist/${{ matrix.dist_dir }}
+  
   publish:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake
+      - uses: actions/download-artifact@v3
+        with:
+          name: binaries-ubuntu-latest
+          path: dist/linux
+      
+      - uses: actions/download-artifact@v3
+        with:
+          name: binaries-macos-latest
+          path: dist/macos
+      
+      - uses: actions/download-artifact@v3
+        with:
+          name: binaries-windows-latest
+          path: dist/windows
       
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
       
-      - run: yarn
-      
-      - name: Build project
-        run: |
-          yarn build
+      - run: npm install
       
       - run: npm publish
         env:

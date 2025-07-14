@@ -541,7 +541,7 @@ commondir@^1.0.1:
   resolved "https://registry.npmmirror.com/commondir/-/commondir-1.0.1.tgz#ddd800da0c66127393cca5950ea968a3aaf1253b"
   integrity sha512-W9pAhw0ja1Edb5GVdIF1mjZw/ASI0AlShXM83UUGe2DVr5TdAPEA1OA8m/g8zWp9x6On7gqufY+FatDbC3MDQg==
 
-compression-streams-polyfill@^0.1.7:
+compression-streams-polyfill@0.1.7:
   version "0.1.7"
   resolved "https://registry.npmmirror.com/compression-streams-polyfill/-/compression-streams-polyfill-0.1.7.tgz#3fdfdf1536960e96fb2256de50fa4065742de7de"
   integrity sha512-Y6VkJzi9JkvmcgDuJ2jJZ5DGljNhUrFBGxx5+gQ2RNg+uPesuRDDL5zN1NTk5NTuynyVkQ4MNip5z37MmtbdpQ==
