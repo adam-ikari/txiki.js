@@ -73,9 +73,6 @@ jobs:
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
           make -j$(nproc)
-          
-          mkdir -p ../dist/${{ matrix.dist_dir }}
-          cp tjs* ../dist/${{ matrix.dist_dir }}/
       
       - uses: actions/upload-artifact@v3
         with:
