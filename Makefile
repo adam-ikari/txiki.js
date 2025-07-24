@@ -14,6 +14,7 @@ endif
 
 TJS=$(BUILD_DIR)/tjs
 QJSC=$(BUILD_DIR)/tjsc
+CMAKE?=/usr/bin/cmake
 STDLIB_MODULES=$(wildcard src/js/stdlib/*.js)
 ESBUILD?=npx esbuild
 ESBUILD_PARAMS_COMMON=--target=es2023 --platform=neutral --format=esm --main-fields=main,module
@@ -35,13 +36,13 @@ endif
 all: $(TJS)
 
 $(BUILD_DIR):
-	cmake -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILDTYPE) $(EXTRA_CMAKE_PARAMS)
+	$(CMAKE) -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILDTYPE) $(EXTRA_CMAKE_PARAMS)
 
 $(TJS): $(BUILD_DIR)
-	cmake --build $(BUILD_DIR) -j $(JOBS)
+	$(CMAKE) --build $(BUILD_DIR) -j $(JOBS)
 
 $(QJSC): $(BUILD_DIR)
-	cmake --build $(BUILD_DIR) --target tjsc -j $(JOBS)
+	$(CMAKE) --build $(BUILD_DIR) --target tjsc -j $(JOBS)
 
 src/bundles/js/core/polyfills.js: src/js/polyfills/*.js
 	$(ESBUILD) src/js/polyfills/index.js \
@@ -157,10 +158,10 @@ stdlib: $(addprefix src/bundles/c/stdlib/, $(patsubst %.js, %.c, $(notdir $(STDL
 js: core stdlib
 
 install: $(TJS)
-	cmake --build $(BUILD_DIR) --target install
+	$(CMAKE) --build $(BUILD_DIR) --target install
 
 clean: $(BUILD_DIR)
-	cmake --build $(BUILD_DIR) --target clean
+	$(CMAKE) --build $(BUILD_DIR) --target clean
 
 debug:
 	BUILDTYPE=Debug $(MAKE)
