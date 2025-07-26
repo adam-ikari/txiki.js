@@ -24,7 +24,11 @@
   "dependencies": {},
   "devDependencies": {
     "abortcontroller-polyfill": "^1.7.5",
-    "compression-streams-polyfill": "0.1.7",
+    "compression-streams-polyfill": "^0.1.7",
+    "esbuild": "^0.21.5",
+    "eslint": "^8.24.0",
+    "eslint-plugin-import": "^2.26.0",
+    "eventemitter3": "^5.0.1",
     "getopts": "^2.3.0",
     "ipaddr.js": "^2.2.0",
     "js-md5": "^0.8.3",
@@ -35,12 +39,9 @@
     "urlpattern-polyfill": "^10.0.0",
     "uuid": "10.0.0",
     "web-streams-polyfill": "^4.0.0",
-    "whatwg-url": "14.0.0",
-    "esbuild": "^0.21.5",
-    "eslint": "^8.24.0",
-    "eslint-plugin-import": "^2.26.0",
     "gh-pages": "^5.0.0",
     "patch-package": "^6.4.7",
+    "whatwg-url": "14.0.0",
     "typedoc": "0.26.3"
   }
 }

@@ -97,6 +97,9 @@ endif()
 
 find_package(CURL REQUIRED)
 
+set(BUILD_STATIC_LIBS ON CACHE BOOL "Build static libraries" FORCE)
+add_subdirectory(deps/llhttp EXCLUDE_FROM_ALL)
+
 add_library(tjs STATIC
     src/builtins.c
     src/curl-utils.c
@@ -126,6 +129,7 @@ add_library(tjs STATIC
     src/mod_streams.c
     src/mod_sys.c
     src/mod_udp.c
+    src/mod_llhttp.c
     src/bundles/c/core/core.c
     src/bundles/c/core/polyfills.c
     src/bundles/c/core/run-main.c
@@ -190,7 +194,7 @@ string(TOLOWER ${CMAKE_SYSTEM_NAME} TJS_PLATFORM)
 target_compile_options(tjs PRIVATE ${tjs_cflags})
 target_compile_definitions(tjs PRIVATE TJS__PLATFORM="${TJS_PLATFORM}")
 target_include_directories(tjs PUBLIC src)
-target_link_libraries(tjs qjs uv_a m3 sqlite3 CURL::libcurl)
+target_link_libraries(tjs qjs uv_a m3 sqlite3 CURL::libcurl llhttp_static)
 
 if (BUILD_WITH_MIMALLOC)
     target_compile_definitions(tjs PRIVATE TJS__HAS_MIMALLOC)
