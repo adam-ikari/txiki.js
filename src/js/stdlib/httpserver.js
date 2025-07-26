@@ -156,56 +156,73 @@ export class ServerResponse extends EventEmitter {
   }
 
   _sendResponse() {
-    console.log("_sendResponse");
-    // Create response using LLHttp utility
-    const parser = new LLHttp();
-    const body =
-      this._bodyChunks.length > 0
-        ? new Uint8Array(
-            this._bodyChunks.reduce((acc, chunk) => acc + chunk.length, 0)
-          )
-        : new Uint8Array(0);
-
-    // Concatenate all body chunks
-    let offset = 0;
-    for (const chunk of this._bodyChunks) {
-      body.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    // Convert body to string for createResponse
-    const bodyStr = new TextDecoder().decode(body);
-
-    const response = parser.createResponse(
-      this.statusCode,
-      this.headers,
-      bodyStr
-    );
-    const encoded = new TextEncoder().encode(response);
-
-    // Ensure Content-Length is set
-    if (!this.headers["Content-Length"] && !this.headers["content-length"]) {
-      this.setHeader("Content-Length", body.length);
-    }
-
     try {
-      const writePromise = this.socket.write(encoded);
-      writePromise
-        .then(() => {
-          console.debug(`Sent ${encoded.length} bytes response`);
-          this.headersSent = true;
+      // Create response using LLHttp utility
+      const parser = new LLHttp();
+      const body =
+        this._bodyChunks.length > 0
+          ? new Uint8Array(
+              this._bodyChunks.reduce((acc, chunk) => acc + chunk.length, 0)
+            )
+          : new Uint8Array(0);
 
-          // Always close connection after response for now
-          // TODO: properly implement keep-alive later
-          this.socket.close();
-          this.emit("close");
-        })
-        .catch((err) => {
-          console.error("Failed to write response:", err);
-          this.socket.close();
-        });
+      // Concatenate all body chunks
+      let offset = 0;
+      for (const chunk of this._bodyChunks) {
+        body.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      // Convert body to string for createResponse
+      const bodyStr = new TextDecoder().decode(body);
+
+      const response = parser.createResponse(
+        this.statusCode,
+        this.headers,
+        bodyStr
+      );
+      const encoded = new TextEncoder().encode(response);
+
+      // Ensure Content-Length is set
+      if (!this.headers["Content-Length"] && !this.headers["content-length"]) {
+        this.setHeader("Content-Length", body.length);
+      }
+
+      try {
+        const writePromise = this.socket.write(encoded);
+        writePromise
+          .then(() => {
+            if (this._debug) {
+              console.debug(`Sent ${encoded.length} bytes response`);
+            }
+            this.headersSent = true;
+
+            // Always close connection after response for now
+            this.socket.close();
+            this.emit("close");
+          })
+          .catch((err) => {
+            // Ignore common socket errors
+            if (!err.message.includes('ECONNRESET') &&
+                !err.message.includes('EPIPE')) {
+              if (this._debug) {
+                console.error("Failed to write response:", err);
+              }
+            }
+            this.socket.close();
+          });
+      } catch (err) {
+        // Ignore common socket errors
+        if (!err.message.includes('ECONNRESET') &&
+            !err.message.includes('EPIPE')) {
+          if (this._debug) {
+            console.error("Failed to start writing response:", err);
+          }
+        }
+        this.socket.close();
+      }
     } catch (err) {
-      console.error("Failed to start writing response:", err);
+      console.error("Failed to create response:", err);
       this.socket.close();
     }
   }
@@ -215,12 +232,13 @@ export class ServerResponse extends EventEmitter {
  * HTTP Server implementation
  */
 export class Server extends EventEmitter {
-  constructor(requestListener) {
+  constructor(requestListener, options = {}) {
     super();
     this._requestListener = requestListener;
     this._connections = new Set();
     this._listening = false;
     this._server = null;
+    this._debug = options.debug || false;
   }
 
   listen(port, hostname, backlog, callback) {
@@ -248,16 +266,26 @@ export class Server extends EventEmitter {
     const handleConnection = async () => {
       try {
         while (true) {
-          const clientHandle = await this._server.accept();
-          if (!clientHandle) break;
+          try {
+            const clientHandle = await this._server.accept();
+            if (!clientHandle) break;
 
-          this._connections.add(clientHandle);
+            this._connections.add(clientHandle);
 
-          // Handle HTTP requests on this connection
-          this._handleConnection(clientHandle);
+            // Handle HTTP requests on this connection
+            this._handleConnection(clientHandle);
+          } catch (err) {
+            // Ignore common connection errors but log others
+            if (!err.message.includes('ECONNRESET') &&
+                !err.message.includes('EPIPE') &&
+                !err.message.includes('ECONNABORTED')) {
+              console.error("Connection error:", err);
+            }
+          }
         }
       } catch (err) {
-        console.error("Error accepting connections:", err);
+        console.error("Server fatal error:", err);
+        this.close();
       }
     };
 
@@ -308,95 +336,124 @@ export class Server extends EventEmitter {
     });
     let currentRequest = null;
     let currentResponse = null;
-    console.debug("New connection handler created");
+    if (this._debug) {
+      console.debug("New connection handler created");
+    }
 
     // Create a simple read loop
     const readLoop = async () => {
       try {
         const buf = new Uint8Array(65536);
         while (true) {
-          const nread = await handle.read(buf);
-          if (nread === null) {
-            // Connection closed
-            break;
-          }
+          try {
+            const nread = await handle.read(buf);
+            if (nread === null) {
+              // Connection closed
+              break;
+            }
 
-          // Convert chunk to string and add to buffer
-          const chunk = new TextDecoder().decode(buf.subarray(0, nread));
-          buffer += chunk;
+            // Convert chunk to string and add to buffer
+            const chunk = new TextDecoder().decode(buf.subarray(0, nread));
+            buffer += chunk;
 
-          // Process as much as possible
-          while (buffer.length > 0) {
-            try {
-              const processed = parser.execute(buffer);
+            // Process as much as possible
+            while (buffer.length > 0) {
+              try {
+                const processed = parser.execute(buffer);
 
-              // If we processed some data, remove it from buffer
-              if (processed > 0) {
-                buffer = buffer.substring(processed);
-              }
-
-              // Check if we have a complete message
-              const result = parser.getResult();
-              if (result.complete) {
-                // Create request and response objects
-                currentRequest = new IncomingMessage(handle);
-                currentRequest.headers = result.headers;
-                currentRequest.method = result.method;
-                currentRequest.url = result.url;
-                currentRequest.httpVersion = `${result.httpMajor}.${result.httpMinor}`;
-                currentRequest.httpVersionMajor = result.httpMajor;
-                currentRequest.httpVersionMinor = result.httpMinor;
-                currentRequest._body = result.body;
-
-                currentResponse = new ServerResponse(handle);
-
-                // Determine if we should keep the connection alive
-                const connectionHeader = (
-                  result.headers["Connection"] ||
-                  result.headers["connection"] ||
-                  ""
-                ).toLowerCase();
-                currentResponse._shouldKeepAlive =
-                  (result.httpMajor === 1 &&
-                    result.httpMinor === 1 &&
-                    connectionHeader !== "close") ||
-                  (result.httpMajor === 1 &&
-                    result.httpMinor === 0 &&
-                    connectionHeader === "keep-alive");
-
-                // Emit the request event
-                this.emit("request", currentRequest, currentResponse);
-
-                // Call the request listener if provided
-                if (this._requestListener) {
-                  this._requestListener(currentRequest, currentResponse);
+                // If we processed some data, remove it from buffer
+                if (processed > 0) {
+                  buffer = buffer.substring(processed);
                 }
 
-                // Ensure response is sent if requestListener didn't call end()
-                // Wait for next tick to give requestListener a chance to call end()
-                setTimeout(() => {
-                  if (!currentResponse.finished) {
-                    currentResponse.end();
-                  }
-                }, 0);
+                // Check if we have a complete message
+                const result = parser.getResult();
+                if (result.complete) {
+                  // Create request and response objects
+                  currentRequest = new IncomingMessage(handle);
+                  currentRequest.headers = result.headers;
+                  currentRequest.method = result.method;
+                  currentRequest.url = result.url;
+                  currentRequest.httpVersion = `${result.httpMajor}.${result.httpMinor}`;
+                  currentRequest.httpVersionMajor = result.httpMajor;
+                  currentRequest.httpVersionMinor = result.httpMinor;
+                  currentRequest._body = result.body;
 
-                // Reset parser for next request
-                parser.reset();
+                  currentResponse = new ServerResponse(handle);
+
+                  // Determine if we should keep the connection alive
+                  const connectionHeader = (
+                    result.headers["Connection"] ||
+                    result.headers["connection"] ||
+                    ""
+                  ).toLowerCase();
+                  currentResponse._shouldKeepAlive =
+                    (result.httpMajor === 1 &&
+                      result.httpMinor === 1 &&
+                      connectionHeader !== "close") ||
+                    (result.httpMajor === 1 &&
+                      result.httpMinor === 0 &&
+                      connectionHeader === "keep-alive");
+
+                  try {
+                    // Emit the request event
+                    this.emit("request", currentRequest, currentResponse);
+
+                    // Call the request listener if provided
+                    if (this._requestListener) {
+                      this._requestListener(currentRequest, currentResponse);
+                    }
+
+                    // Ensure response is sent if requestListener didn't call end()
+                    setTimeout(() => {
+                      if (!currentResponse.finished) {
+                        currentResponse.end();
+                      }
+                    }, 0);
+                  } catch (err) {
+                    // Ignore errors in request handlers but log them
+                    if (this._debug) {
+                      console.error("Request handler error:", err);
+                    }
+                    currentResponse.writeHead(500);
+                    currentResponse.end("Internal Server Error\n");
+                  }
+
+                  // Reset parser for next request
+                  parser.reset();
+                }
+              } catch (err) {
+                // Handle parse errors
+                if (!err.message.includes('HPE_INVALID_METHOD') &&
+                    !err.message.includes('HPE_INVALID_VERSION')) {
+                  if (this._debug) {
+                    console.error("HTTP parse error:", err, "\nBuffer:", buffer);
+                  }
+                }
+                handle.close();
+                this._connections.delete(handle);
+                return;
               }
-            } catch (err) {
-              // Handle parse errors
-              console.error("HTTP parse error:", err, "\nBuffer:", buffer);
-              // Response sent, stop processing this connection
-              handle.close();
-              this._connections.delete(handle);
-              return;
             }
+          } catch (err) {
+            // Ignore common socket errors
+            if (!err.message.includes('ECONNRESET') &&
+                !err.message.includes('EPIPE')) {
+              console.error("Socket error:", err);
+            }
+            break;
           }
         }
       } catch (err) {
-        console.error("Error handling connection:", err);
+        if (this._debug) {
+          console.error("Connection handler error:", err);
+        }
       } finally {
-        handle.close();
+        try {
+          handle.close();
+        } catch (err) {
+          // Ignore close errors
+        }
         this._connections.delete(handle);
       }
     };
