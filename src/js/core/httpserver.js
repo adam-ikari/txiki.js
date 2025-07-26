@@ -3,16 +3,23 @@
  * Following Node.js API style conventions
  */
 
-import { EventEmitter } from "eventemitter3";
+import { listen } from "./sockets.js";
 
 const core = globalThis[Symbol.for("tjs.internal.core")];
-const { LLHttp, TCP } = core;
+const { LLHttp } = core;
+
+// 使用 mitt 替代自定义 EventEmitter
+import mitt from "mitt";
+
+/**
+ * A lightweight event emitter implementation
+ */
 
 /**
  * IncomingMessage represents the HTTP request received by the server.
  * This is similar to Node.js's http.IncomingMessage.
  */
-export class IncomingMessage extends EventEmitter {
+export class IncomingMessage extends mitt() {
   constructor(socket) {
     super();
     this.socket = socket;
@@ -45,7 +52,7 @@ export class IncomingMessage extends EventEmitter {
  * ServerResponse represents the HTTP response sent by the server.
  * This is similar to Node.js's http.ServerResponse.
  */
-export class ServerResponse extends EventEmitter {
+export class ServerResponse extends mitt() {
   constructor(socket) {
     super();
     this.socket = socket;
@@ -203,8 +210,10 @@ export class ServerResponse extends EventEmitter {
           })
           .catch((err) => {
             // Ignore common socket errors
-            if (!err.message.includes('ECONNRESET') &&
-                !err.message.includes('EPIPE')) {
+            if (
+              !err.message.includes("ECONNRESET") &&
+              !err.message.includes("EPIPE")
+            ) {
               if (this._debug) {
                 console.error("Failed to write response:", err);
               }
@@ -213,8 +222,10 @@ export class ServerResponse extends EventEmitter {
           });
       } catch (err) {
         // Ignore common socket errors
-        if (!err.message.includes('ECONNRESET') &&
-            !err.message.includes('EPIPE')) {
+        if (
+          !err.message.includes("ECONNRESET") &&
+          !err.message.includes("EPIPE")
+        ) {
           if (this._debug) {
             console.error("Failed to start writing response:", err);
           }
@@ -231,7 +242,7 @@ export class ServerResponse extends EventEmitter {
 /**
  * HTTP Server implementation
  */
-export class Server extends EventEmitter {
+export class Server extends mitt() {
   constructor(requestListener, options = {}) {
     super();
     this._requestListener = requestListener;
@@ -253,50 +264,49 @@ export class Server extends EventEmitter {
     hostname = hostname || "0.0.0.0";
     port = port || 0;
 
-    // Create TCP server
-    this._server = new TCP();
+    // Create TCP server using the new listen function
+    listen("tcp", hostname, port, { backlog: backlog || 511 })
+      .then((server) => {
+        this._server = server;
 
-    // Bind to address
-    this._server.bind({ ip: hostname, port });
-
-    // Listen for connections
-    this._server.listen(backlog || 511);
-
-    // Handle incoming connections
-    const handleConnection = async () => {
-      try {
-        while (true) {
+        // Handle incoming connections
+        const handleConnection = async () => {
           try {
-            const clientHandle = await this._server.accept();
-            if (!clientHandle) break;
+            for await (const clientHandle of this._server) {
+              if (!clientHandle) break;
 
-            this._connections.add(clientHandle);
+              this._connections.add(clientHandle);
 
-            // Handle HTTP requests on this connection
-            this._handleConnection(clientHandle);
+              // Handle HTTP requests on this connection
+              this._handleConnection(clientHandle);
+            }
           } catch (err) {
             // Ignore common connection errors but log others
-            if (!err.message.includes('ECONNRESET') &&
-                !err.message.includes('EPIPE') &&
-                !err.message.includes('ECONNABORTED')) {
+            if (
+              !err.message.includes("ECONNRESET") &&
+              !err.message.includes("EPIPE") &&
+              !err.message.includes("ECONNABORTED")
+            ) {
               console.error("Connection error:", err);
             }
           }
+        };
+
+        // Start accepting connections
+        handleConnection();
+
+        this._listening = true;
+        this.emit("listening");
+        if (callback) {
+          callback();
         }
-      } catch (err) {
-        console.error("Server fatal error:", err);
-        this.close();
-      }
-    };
-
-    // Start accepting connections
-    handleConnection();
-
-    this._listening = true;
-    this.emit("listening");
-    if (callback) {
-      callback();
-    }
+      })
+      .catch((err) => {
+        console.error("Failed to create server:", err);
+        if (callback) {
+          callback(err);
+        }
+      });
 
     return this;
   }
@@ -424,10 +434,17 @@ export class Server extends EventEmitter {
                 }
               } catch (err) {
                 // Handle parse errors
-                if (!err.message.includes('HPE_INVALID_METHOD') &&
-                    !err.message.includes('HPE_INVALID_VERSION')) {
+                if (
+                  !err.message.includes("HPE_INVALID_METHOD") &&
+                  !err.message.includes("HPE_INVALID_VERSION")
+                ) {
                   if (this._debug) {
-                    console.error("HTTP parse error:", err, "\nBuffer:", buffer);
+                    console.error(
+                      "HTTP parse error:",
+                      err,
+                      "\nBuffer:",
+                      buffer
+                    );
                   }
                 }
                 handle.close();
@@ -437,8 +454,10 @@ export class Server extends EventEmitter {
             }
           } catch (err) {
             // Ignore common socket errors
-            if (!err.message.includes('ECONNRESET') &&
-                !err.message.includes('EPIPE')) {
+            if (
+              !err.message.includes("ECONNRESET") &&
+              !err.message.includes("EPIPE")
+            ) {
               console.error("Socket error:", err);
             }
             break;
