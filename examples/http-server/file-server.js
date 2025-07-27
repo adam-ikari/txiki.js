@@ -71,15 +71,15 @@ function sendError(res, statusCode, message) {
 }
 
 async function serveFile(filePath, res) {
-    // 确保_processing标志被设置
-    if (!res._processing) {
-        res._processing = true;
+    // 在函数开始处检查响应是否已经完成
+    if (res.finished) {
+        console.warn('Response already finished, cannot serve file:', filePath);
+        return;
     }
     
     // 在函数开始处检查响应头是否已经发送
     if (res.headersSent) {
         console.warn('Headers already sent, cannot serve file:', filePath);
-        res._processing = false;
         return;
     }
     
@@ -95,7 +95,6 @@ async function serveFile(filePath, res) {
                 // 检查是否已经发送了响应头
                 if (res.headersSent) {
                     console.warn('Headers already sent, cannot serve index.html');
-                    res._processing = false;
                     return;
                 }
                 return serveFile(indexPath, res);
@@ -104,7 +103,6 @@ async function serveFile(filePath, res) {
                 // 检查是否已经发送了响应头
                 if (res.headersSent) {
                     console.warn('Headers already sent, cannot serve directory listing');
-                    res._processing = false;
                     return;
                 }
                 return serveDirectoryListing(filePath, res);
@@ -118,7 +116,6 @@ async function serveFile(filePath, res) {
         // 在发送响应前检查是否已经发送过响应头
         if (res.headersSent) {
             console.warn('Headers already sent, cannot serve file:', filePath);
-            res._processing = false;
             return;
         }
         
@@ -132,7 +129,7 @@ async function serveFile(filePath, res) {
         
     } catch (error) {
         // 在调用sendError前检查响应状态
-        if (!res.headersSent) {
+        if (!res.headersSent && !res.finished) {
             // 使用error.code而不是tjs.errno
             if (error.code === 'ENOENT') {
                 sendError(res, 404, 'File not found');
@@ -142,33 +139,28 @@ async function serveFile(filePath, res) {
                 console.error('Error serving file:', error);
                 sendError(res, 500, 'Internal server error');
             }
-        } else {
+        } else if (!res.finished) {
             console.error('Error after headers sent:', error);
             // 如果响应头已经发送，只能尝试结束响应
-            if (!res.writableEnded) {
-                try {
-                    res.end();
-                } catch (endError) {
-                    console.error('Failed to end response:', endError);
-                }
+            try {
+                res.end();
+            } catch (endError) {
+                console.error('Failed to end response:', endError);
             }
         }
-    } finally {
-        // 清除_processing标志
-        res._processing = false;
     }
 }
 
 async function serveDirectoryListing(dirPath, res) {
-    // 确保_processing标志被设置
-    if (!res._processing) {
-        res._processing = true;
+    // 检查响应是否已经完成
+    if (res.finished) {
+        console.warn('Response already finished, cannot serve directory listing for:', dirPath);
+        return;
     }
     
     // 检查响应头是否已经发送
     if (res.headersSent) {
         console.warn('Headers already sent, cannot serve directory listing for:', dirPath);
-        res._processing = false;
         return;
     }
     
@@ -224,7 +216,6 @@ async function serveDirectoryListing(dirPath, res) {
         // 检查是否已经发送了响应头
         if (res.headersSent) {
             console.warn('Headers already sent, cannot serve directory listing');
-            res._processing = false;
             return;
         }
         
@@ -234,7 +225,7 @@ async function serveDirectoryListing(dirPath, res) {
     } catch (error) {
         console.error('Error reading directory:', error);
         // 检查是否已经发送了响应头，避免重复发送
-        if (!res.headersSent) {
+        if (!res.headersSent && !res.finished) {
             // 使用error.code而不是tjs.errno
             if (error.code === 'ENOENT') {
                 sendError(res, 404, 'Directory not found');
@@ -243,26 +234,20 @@ async function serveDirectoryListing(dirPath, res) {
             } else {
                 sendError(res, 500, 'Could not read directory');
             }
-        } else {
+        } else if (!res.finished) {
             console.error('Error after headers sent:', error);
             // 如果响应头已经发送，则只记录错误并结束响应（如果尚未结束）
-            if (!res.writableEnded) {
-                try {
-                    res.end();
-                } catch (endError) {
-                    console.error('Failed to end response:', endError);
-                }
+            try {
+                res.end();
+            } catch (endError) {
+                console.error('Failed to end response:', endError);
             }
         }
-    } finally {
-        // 清除_processing标志
-        res._processing = false;
     }
 }
 
 const server = tjs.createServer((req, res) => {
-    // 设置_processing标志以防止HTTP服务器自动结束响应
-    res._processing = true;
+    // 不再需要设置_processing标志，因为 HTTP 服务器现在与 Node.js 行为完全兼容
     
     const url = new URL(req.url, `http://localhost:${options.port}`);
     let filePath = decodeURIComponent(url.pathname);

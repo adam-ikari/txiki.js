@@ -18,33 +18,39 @@ class TinyEmitter {
         }
 
         const events = this._events;
+        
         if (!events[event]) {
             events[event] = [];
         }
 
         events[event].push(listener);
+        
         return this;
     }
 
     once(event, listener) {
         const self = this;
+        
         function onceListener() {
             self.removeListener(event, onceListener);
             listener.apply(this, arguments);
         }
 
         onceListener.listener = listener;
+        
         return this.on(event, onceListener);
     }
 
     removeListener(event, listener) {
         const events = this._events;
+        
         if (!events[event] || !listener) {
             return this;
         }
 
         const listeners = events[event];
         const index = listeners.findIndex(l => l === listener || l.listener === listener);
+        
         if (index !== -1) {
             listeners.splice(index, 1);
         }
@@ -54,6 +60,7 @@ class TinyEmitter {
 
     emit(event) {
         const events = this._events;
+        
         if (!events[event]) {
             return false;
         }
@@ -123,15 +130,17 @@ export class ServerResponse extends TinyEmitter {
         this._bodyChunks = [];
         this._bodyLength = 0;
         this._shouldKeepAlive = true;
-        // 添加_processing标志以防止自动结束响应
-        this._processing = false;
+        // 移除 _processing 标志以完全兼容 Node.js 行为
+        // Node.js 不会自动结束响应，而是由开发者显式调用 end()
     }
 
     setHeader(name, value) {
         if (this.headersSent) {
             throw new Error('Headers already sent');
         }
+        
         this.headers[name] = value;
+        
         return this;
     }
 
@@ -143,7 +152,9 @@ export class ServerResponse extends TinyEmitter {
         if (this.headersSent) {
             throw new Error('Headers already sent');
         }
+
         delete this.headers[name];
+        
         return this;
     }
 
@@ -180,6 +191,7 @@ export class ServerResponse extends TinyEmitter {
         }
 
         let buffer;
+        
         if (typeof chunk === 'string') {
             buffer = new TextEncoder().encode(chunk);
         } else if (chunk instanceof Uint8Array) {
@@ -217,7 +229,7 @@ export class ServerResponse extends TinyEmitter {
 
         // Mark as finished before sending response
         this.finished = true;
-        
+
         // Send the response
         this._sendResponse();
 
@@ -237,13 +249,14 @@ export class ServerResponse extends TinyEmitter {
             if (!this.headers['Content-Length'] && !this.headers['content-length']) {
                 this.setHeader('Content-Length', this._bodyLength);
             }
-            
+
             this.headersSent = true;
         }
 
         try {
             // Efficiently concatenate body chunks
             let body;
+            
             if (this._bodyChunks.length === 0) {
                 body = new Uint8Array(0);
             } else if (this._bodyChunks.length === 1) {
@@ -251,6 +264,7 @@ export class ServerResponse extends TinyEmitter {
             } else {
                 body = new Uint8Array(this._bodyLength);
                 let offset = 0;
+                
                 for (const chunk of this._bodyChunks) {
                     body.set(chunk, offset);
                     offset += chunk.length;
@@ -262,15 +276,15 @@ export class ServerResponse extends TinyEmitter {
 
             // Create HTTP response manually to ensure proper format
             let response = `HTTP/1.1 ${this.statusCode} ${this.statusMessage}\r\n`;
-            
+
             // Add headers
             for (const [ name, value ] of Object.entries(this.headers)) {
                 response += `${name}: ${value}\r\n`;
             }
-            
+
             // End of headers
             response += '\r\n';
-            
+
             // Add body if present
             if (bodyStr) {
                 response += bodyStr;
@@ -300,9 +314,10 @@ export class ServerResponse extends TinyEmitter {
             this.socket.close();
         }
     }
-    
+
     _isCommonSocketError(err) {
         const msg = err.message || '';
+        
         return msg.includes('ECONNRESET') || 
                msg.includes('EPIPE') || 
                msg.includes('ECONNABORTED') ||
@@ -365,7 +380,7 @@ export class Server extends TinyEmitter {
                         if (!this._isCommonConnectionError(err)) {
                             console.error('Connection error:', err);
                         }
-                        
+
                         // Break loop on certain errors
                         if (err.name === 'AbortError' || (err.message && err.message.includes('closed'))) {
                             break;
@@ -508,30 +523,16 @@ export class Server extends TinyEmitter {
                                             this._requestListener(currentRequest, currentResponse);
                                         }
 
-                                        // Ensure response is sent if requestListener didn't call end()
-                                        // Only auto-end if not marked as processing
-                                        setImmediate(() => {
-                                            if (!currentResponse.finished && !currentResponse._processing) {
-                                                currentResponse.end();
-                                            }
-                                        });
+                                        // Node.js 不会自动结束响应，移除 txiki.js 特有的自动结束机制
+                                        // 确保与 Node.js 行为完全兼容
                                     } catch (err) {
                                         // Ignore errors in request handlers but log them
                                         if (this._debug) {
                                             console.error('Request handler error:', err);
                                         }
 
-                                        // Only send error response if not marked as processing
-                                        if (!currentResponse.finished && !currentResponse._processing) {
-                                            try {
-                                                currentResponse.writeHead(500, { 'Content-Type': 'text/plain' });
-                                                currentResponse.end('Internal Server Error\n');
-                                            } catch (endErr) {
-                                                // Failed to send error response, just close the connection
-                                                connectionClosed = true;
-                                                handle.close();
-                                            }
-                                        }
+                                        // 与 Node.js 保持一致，不自动发送错误响应
+                                        // 开发者需要在自己的请求处理函数中处理错误
                                     }
 
                                     // Reset parser for next request if connection is kept alive
@@ -550,6 +551,7 @@ export class Server extends TinyEmitter {
                                 if (this._debug) {
                                     const shouldLog = !err.message.includes('HPE_INVALID_METHOD') &&
                                                     !err.message.includes('HPE_INVALID_VERSION');
+                                    
                                     if (shouldLog) {
                                         console.error(
                                             'HTTP parse error:',
@@ -559,7 +561,7 @@ export class Server extends TinyEmitter {
                                         );
                                     }
                                 }
-                                
+
                                 connectionClosed = true;
                                 handle.close();
                                 this._connections.delete(handle);
@@ -571,7 +573,7 @@ export class Server extends TinyEmitter {
                         if (!this._isCommonSocketError(err)) {
                             console.error('Socket error:', err);
                         }
-                        
+
                         connectionClosed = true;
                         break;
                     }
@@ -596,17 +598,19 @@ export class Server extends TinyEmitter {
         // Start the read loop
         readLoop();
     }
-    
+
     _isCommonConnectionError(err) {
         const msg = err.message || '';
+        
         return msg.includes('ECONNRESET') || 
                msg.includes('EPIPE') || 
                msg.includes('ECONNABORTED') ||
                msg.includes('EINVAL');
     }
-    
+
     _isCommonSocketError(err) {
         const msg = err.message || '';
+        
         return msg.includes('ECONNRESET') || 
                msg.includes('EPIPE') || 
                msg.includes('ECONNABORTED') ||
