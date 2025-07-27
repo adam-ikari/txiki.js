@@ -368,14 +368,16 @@ export class Server extends EventEmitter {
         const readLoop = async () => {
             try {
                 const buf = new Uint8Array(65536);
+                let running = true;
 
                 // eslint-disable-next-line no-constant-condition
-                while (true) {
+                while (running) {
                     try {
                         const nread = await handle.read(buf);
 
                         if (nread === null) {
                             // Connection closed
+                            running = false;
                             break;
                         }
 
@@ -471,6 +473,7 @@ export class Server extends EventEmitter {
 
                                 handle.close();
                                 this._connections.delete(handle);
+                                running = false;
 
                                 return;
                             }
@@ -479,11 +482,13 @@ export class Server extends EventEmitter {
                         // Ignore common socket errors
                         if (
                             !err.message.includes('ECONNRESET') &&
-              !err.message.includes('EPIPE')
+              !err.message.includes('EPIPE') &&
+              !err.message.includes('EINVAL')
                         ) {
                             console.error('Socket error:', err);
                         }
 
+                        running = false;
                         break;
                     }
                 }
