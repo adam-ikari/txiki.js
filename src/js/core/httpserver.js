@@ -250,6 +250,13 @@ export class ServerResponse extends TinyEmitter {
                 this.setHeader('Content-Length', this._bodyLength);
             }
 
+            // 设置 Connection 头部以支持 Keep-Alive
+            if (this._shouldKeepAlive) {
+                this.setHeader('Connection', 'keep-alive');
+            } else {
+                this.setHeader('Connection', 'close');
+            }
+
             this.headersSent = true;
         }
 
@@ -537,8 +544,22 @@ export class Server extends TinyEmitter {
 
                                     // Reset parser for next request if connection is kept alive
                                     if (currentResponse._shouldKeepAlive) {
+                                        // For HTTP/1.1, keep the connection open by default
+                                        // unless explicitly closed by the server
+                                        if (result.httpMajor === 1 && result.httpMinor === 1) {
+                                            // If no Connection header was specified, default to keep-alive
+                                            if (!result.headers['Connection'] && !result.headers['connection']) {
+                                                currentResponse._shouldKeepAlive = true;
+                                                currentResponse.setHeader('Connection', 'keep-alive');
+                                            }
+                                        }
+                                        
+                                        // Reset parser for the next request
                                         parser.reset();
+                                        
+                                        // Continue listening for more requests on this connection
                                     } else {
+                                        // If we shouldn't keep the connection alive, close after this request
                                         connectionClosed = true;
                                         break;
                                     }

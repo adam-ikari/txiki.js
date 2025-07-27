@@ -122,7 +122,8 @@ async function serveFile(filePath, res) {
         res.writeHead(200, {
             'Content-Type': mimeType,
             'Content-Length': content.length,
-            'Cache-Control': 'public, max-age=3600'
+            'Cache-Control': 'public, max-age=3600',
+            'Connection': 'keep-alive'
         });
         
         res.end(content);
@@ -281,6 +282,7 @@ server.on('listening', () => {
     console.log('  - Directory listings');
     console.log('  - MIME type detection');
     console.log('  - Basic security (path traversal protection)');
+    console.log('  - HTTP Keep-Alive support');
 });
 
 server.listen(options.port, '127.0.0.1');
