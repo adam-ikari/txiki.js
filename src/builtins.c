@@ -26,7 +26,6 @@
 #include "bundles/c/stdlib/ffi.c"
 #include "bundles/c/stdlib/getopts.c"
 #include "bundles/c/stdlib/hashing.c"
-#include "bundles/c/stdlib/httpserver.c"
 #include "bundles/c/stdlib/ipaddr.c"
 #include "bundles/c/stdlib/path.c"
 #include "bundles/c/stdlib/posix-socket.c"
@@ -46,7 +45,6 @@ static tjs_builtin_t builtins[] = {
     { "tjs:ffi", tjs__ffi, sizeof(tjs__ffi) },
     { "tjs:getopts", tjs__getopts, sizeof(tjs__getopts) },
     { "tjs:hashing", tjs__hashing, sizeof(tjs__hashing) },
-    { "tjs:httpserver", tjs__httpserver, sizeof(tjs__httpserver) },
     { "tjs:ipaddr", tjs__ipaddr, sizeof(tjs__ipaddr) },
     { "tjs:path", tjs__path, sizeof(tjs__path) },
     { "tjs:posix-socket", tjs__posix_socket, sizeof(tjs__posix_socket) },

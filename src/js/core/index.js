@@ -5,6 +5,7 @@ import engine from './engine.js';
 import env from './env.js';
 import { open, makeDir, makeTempFile, remove, symlink } from './fs.js';
 import { lookup } from './lookup.js';
+import { createServer } from './httpserver.js';
 import pathModule from './path.js';
 import { addSignalListener, removeSignalListener } from './signal.js';
 import { connect, listen } from './sockets.js';
@@ -165,6 +166,14 @@ Object.defineProperty(tjs, 'lookup', {
     configurable: false,
     writable: false,
     value: lookup
+});
+
+// HTTP server.
+Object.defineProperty(tjs, 'createServer', {
+    enumerable: true,
+    configurable: false,
+    writable: false,
+    value: createServer
 });
 
 // Stdio.

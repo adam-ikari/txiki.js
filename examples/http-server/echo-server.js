@@ -2,7 +2,6 @@
 //
 // Usage: tjs run echo-server.js [--port 3003]
 
-import { createServer } from 'tjs:httpserver';
 import getopts from 'tjs:getopts';
 
 const options = getopts(tjs.args.slice(2), {
@@ -10,7 +9,7 @@ const options = getopts(tjs.args.slice(2), {
     default: { port: 3003 }
 });
 
-const server = createServer((req, res) => {
+const server = tjs.createServer((req, res) => {
     console.log(`${req.method} ${req.url}`);
     
     // Prepare echo response data

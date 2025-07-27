@@ -2,7 +2,6 @@
 //
 // Usage: tjs run file-server.js [--port 3002] [--dir ./public]
 
-import { createServer } from 'tjs:httpserver';
 import getopts from 'tjs:getopts';
 import path from 'tjs:path';
 
@@ -152,7 +151,7 @@ async function serveDirectoryListing(dirPath, res) {
     }
 }
 
-const server = createServer(async (req, res) => {
+const server = tjs.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${options.port}`);
     let filePath = decodeURIComponent(url.pathname);
     

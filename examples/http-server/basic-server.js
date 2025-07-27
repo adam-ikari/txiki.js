@@ -2,7 +2,6 @@
 //
 // Usage: tjs run basic-server.js [--port 3000] [--host 127.0.0.1]
 
-import { createServer } from 'tjs:httpserver';
 import getopts from 'tjs:getopts';
 
 const options = getopts(tjs.args.slice(2), {
@@ -17,7 +16,7 @@ const options = getopts(tjs.args.slice(2), {
 });
 
 // Create a basic HTTP server
-const server = createServer((req, res) => {
+const server = tjs.createServer((req, res) => {
     console.log(`${req.method} ${req.url}`);
     
     // Set response headers

@@ -2,7 +2,6 @@
 //
 // Usage: tjs run api-server.js [--port 3001]
 
-import { createServer } from 'tjs:httpserver';
 import getopts from 'tjs:getopts';
 
 const options = getopts(tjs.args.slice(2), {
@@ -45,7 +44,7 @@ function sendJSON(res, statusCode, data) {
     res.end(JSON.stringify(data, null, 2));
 }
 
-const server = createServer(async (req, res) => {
+const server = tjs.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${options.port}`);
     const path = url.pathname;
     const method = req.method;
