@@ -15,7 +15,8 @@
   ],
   "scripts": {
     "build": "make js && make",
-    "prepublishOnly": "yarn build"
+    "prepublishOnly": "yarn build",
+    "format": "eslint --fix ."
   },
   "bin": {
     "tjs": "dist/linux-x64/tjs"
