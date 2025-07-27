@@ -133,9 +133,9 @@ async function serveFile(filePath, res) {
     } catch (error) {
         // 在调用sendError前检查响应状态
         if (!res.headersSent) {
-            if (error.code === 'ENOENT') {
+            if (error.errno === tjs.errno.ENOENT) {
                 sendError(res, 404, 'File not found');
-            } else if (error.code === 'EACCES') {
+            } else if (error.errno === tjs.errno.EACCES) {
                 sendError(res, 403, 'Access denied');
             } else {
                 console.error('Error serving file:', error);
@@ -234,13 +234,7 @@ async function serveDirectoryListing(dirPath, res) {
         console.error('Error reading directory:', error);
         // 检查是否已经发送了响应头，避免重复发送
         if (!res.headersSent) {
-            if (error.code === 'ENOENT') {
-                sendError(res, 404, 'Directory not found');
-            } else if (error.code === 'EACCES') {
-                sendError(res, 403, 'Access denied');
-            } else {
-                sendError(res, 500, 'Could not read directory');
-            }
+            sendError(res, 500, 'Could not read directory');
         } else {
             console.error('Error after headers sent:', error);
             // 如果响应头已经发送，则只记录错误并结束响应（如果尚未结束）

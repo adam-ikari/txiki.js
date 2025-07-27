@@ -3,20 +3,86 @@
  * Following Node.js API style conventions
  */
 
-import { EventEmitter } from 'eventemitter3';
-
 const core = globalThis[Symbol.for('tjs.internal.core')];
 const { LLHttp, TCP } = core;
+
+// Simple event emitter implementation to reduce bundle size
+class TinyEmitter {
+    constructor() {
+        this._events = Object.create(null);
+    }
+
+    on(event, listener) {
+        if (typeof listener !== 'function') {
+            throw new TypeError('Listener must be a function');
+        }
+
+        const events = this._events;
+        if (!events[event]) {
+            events[event] = [];
+        }
+
+        events[event].push(listener);
+        return this;
+    }
+
+    once(event, listener) {
+        const self = this;
+        function onceListener() {
+            self.removeListener(event, onceListener);
+            listener.apply(this, arguments);
+        }
+
+        onceListener.listener = listener;
+        return this.on(event, onceListener);
+    }
+
+    removeListener(event, listener) {
+        const events = this._events;
+        if (!events[event] || !listener) {
+            return this;
+        }
+
+        const listeners = events[event];
+        const index = listeners.findIndex(l => l === listener || l.listener === listener);
+        if (index !== -1) {
+            listeners.splice(index, 1);
+        }
+
+        return this;
+    }
+
+    emit(event) {
+        const events = this._events;
+        if (!events[event]) {
+            return false;
+        }
+
+        const listeners = events[event].slice(); // Create a copy
+        const args = Array.prototype.slice.call(arguments, 1);
+
+        for (let i = 0; i < listeners.length; i++) {
+            listeners[i].apply(this, args);
+        }
+
+        return true;
+    }
+}
+
+// Polyfill for setImmediate
+const setImmediate = globalThis.setImmediate || function(fn) {
+    setTimeout(fn, 0);
+};
 
 /**
  * IncomingMessage represents the HTTP request received by the server.
  * This is similar to Node.js's http.IncomingMessage.
  */
-export class IncomingMessage extends EventEmitter {
+export class IncomingMessage extends TinyEmitter {
     constructor(socket) {
         super();
         this.socket = socket;
-        this.headers = {};
+        this.headers = Object.create(null);
         this.method = '';
         this.url = '';
         this.httpVersion = '1.1';
@@ -31,12 +97,12 @@ export class IncomingMessage extends EventEmitter {
     }
 
     get statusCode() {
-    // For requests, this doesn't apply, but keeping for compatibility
+        // For requests, this doesn't apply, but keeping for compatibility
         return undefined;
     }
 
     get statusMessage() {
-    // For requests, this doesn't apply, but keeping for compatibility
+        // For requests, this doesn't apply, but keeping for compatibility
         return undefined;
     }
 }
@@ -45,7 +111,7 @@ export class IncomingMessage extends EventEmitter {
  * ServerResponse represents the HTTP response sent by the server.
  * This is similar to Node.js's http.ServerResponse.
  */
-export class ServerResponse extends EventEmitter {
+export class ServerResponse extends TinyEmitter {
     constructor(socket) {
         super();
         this.socket = socket;
@@ -53,14 +119,19 @@ export class ServerResponse extends EventEmitter {
         this.finished = false;
         this.statusCode = 200;
         this.statusMessage = 'OK';
-        this.headers = {};
+        this.headers = Object.create(null);
         this._bodyChunks = [];
+        this._bodyLength = 0;
         this._shouldKeepAlive = true;
+        // 添加_processing标志以防止自动结束响应
+        this._processing = false;
     }
 
     setHeader(name, value) {
+        if (this.headersSent) {
+            throw new Error('Headers already sent');
+        }
         this.headers[name] = value;
-
         return this;
     }
 
@@ -69,8 +140,10 @@ export class ServerResponse extends EventEmitter {
     }
 
     removeHeader(name) {
+        if (this.headersSent) {
+            throw new Error('Headers already sent');
+        }
         delete this.headers[name];
-
         return this;
     }
 
@@ -93,8 +166,6 @@ export class ServerResponse extends EventEmitter {
             }
         }
 
-        this.headersSent = true;
-
         return this;
     }
 
@@ -108,22 +179,26 @@ export class ServerResponse extends EventEmitter {
             encoding = null;
         }
 
+        let buffer;
         if (typeof chunk === 'string') {
-            chunk = new TextEncoder().encode(chunk);
+            buffer = new TextEncoder().encode(chunk);
+        } else if (chunk instanceof Uint8Array) {
+            buffer = chunk;
+        } else {
+            throw new TypeError('Chunk must be a string or Uint8Array');
         }
 
-        this._bodyChunks.push(chunk);
+        this._bodyChunks.push(buffer);
+        this._bodyLength += buffer.length;
 
         if (callback) {
-            setTimeout(callback, 0);
+            setImmediate(callback);
         }
 
         return true;
     }
 
     end(data, encoding, callback) {
-        console.log('end');
-
         if (this.finished) {
             return this;
         }
@@ -140,118 +215,112 @@ export class ServerResponse extends EventEmitter {
             this.write(data, encoding);
         }
 
+        // Mark as finished before sending response
+        this.finished = true;
+        
         // Send the response
         this._sendResponse();
 
-        this.finished = true;
-
         if (callback) {
-            setTimeout(callback, 0);
+            setImmediate(callback);
         }
 
         this.emit('finish');
-
-        // Close connection if not keep-alive
-        if (!this._shouldKeepAlive) {
-            this.socket.close();
-        }
 
         return this;
     }
 
     _sendResponse() {
+        // Ensure headers are sent
+        if (!this.headersSent) {
+            // Set Content-Length if not already set
+            if (!this.headers['Content-Length'] && !this.headers['content-length']) {
+                this.setHeader('Content-Length', this._bodyLength);
+            }
+            
+            this.headersSent = true;
+        }
+
         try {
-            // Create response using LLHttp utility
-            const parser = new LLHttp();
-            const body =
-        this._bodyChunks.length > 0
-            ? new Uint8Array(
-                this._bodyChunks.reduce((acc, chunk) => acc + chunk.length, 0)
-            )
-            : new Uint8Array(0);
-
-            // Concatenate all body chunks
-            let offset = 0;
-
-            for (const chunk of this._bodyChunks) {
-                body.set(chunk, offset);
-                offset += chunk.length;
+            // Efficiently concatenate body chunks
+            let body;
+            if (this._bodyChunks.length === 0) {
+                body = new Uint8Array(0);
+            } else if (this._bodyChunks.length === 1) {
+                body = this._bodyChunks[0];
+            } else {
+                body = new Uint8Array(this._bodyLength);
+                let offset = 0;
+                for (const chunk of this._bodyChunks) {
+                    body.set(chunk, offset);
+                    offset += chunk.length;
+                }
             }
 
-            // Convert body to string for createResponse
+            // Convert body to string
             const bodyStr = new TextDecoder().decode(body);
 
-            const response = parser.createResponse(
-                this.statusCode,
-                this.headers,
-                bodyStr
-            );
+            // Create HTTP response manually to ensure proper format
+            let response = `HTTP/1.1 ${this.statusCode} ${this.statusMessage}\r\n`;
+            
+            // Add headers
+            for (const [ name, value ] of Object.entries(this.headers)) {
+                response += `${name}: ${value}\r\n`;
+            }
+            
+            // End of headers
+            response += '\r\n';
+            
+            // Add body if present
+            if (bodyStr) {
+                response += bodyStr;
+            }
+
             const encoded = new TextEncoder().encode(response);
 
-            // Ensure Content-Length is set
-            if (!this.headers['Content-Length'] && !this.headers['content-length']) {
-                this.setHeader('Content-Length', body.length);
-            }
+            const writePromise = this.socket.write(encoded);
 
-            try {
-                const writePromise = this.socket.write(encoded);
-
-                writePromise
-                    .then(() => {
-                        if (this._debug) {
-                            console.debug(`Sent ${encoded.length} bytes response`);
-                        }
-
-                        this.headersSent = true;
-
-                        // Always close connection after response for now
+            writePromise
+                .then(() => {
+                    // Close connection if not keep-alive
+                    if (!this._shouldKeepAlive) {
                         this.socket.close();
-                        this.emit('close');
-                    })
-                    .catch(err => {
-                        // Ignore common socket errors
-                        if (
-                            !err.message.includes('ECONNRESET') &&
-              !err.message.includes('EPIPE')
-                        ) {
-                            if (this._debug) {
-                                console.error('Failed to write response:', err);
-                            }
-                        }
-
-                        this.socket.close();
-                    });
-            } catch (err) {
-                // Ignore common socket errors
-                if (
-                    !err.message.includes('ECONNRESET') &&
-          !err.message.includes('EPIPE')
-                ) {
-                    if (this._debug) {
-                        console.error('Failed to start writing response:', err);
                     }
-                }
-
-                this.socket.close();
-            }
+                    this.emit('close');
+                })
+                .catch(err => {
+                    // Ignore common socket errors
+                    if (!this._isCommonSocketError(err)) {
+                        console.error('Failed to write response:', err);
+                    }
+                    this.socket.close();
+                });
         } catch (err) {
             console.error('Failed to create response:', err);
             this.socket.close();
         }
+    }
+    
+    _isCommonSocketError(err) {
+        const msg = err.message || '';
+        return msg.includes('ECONNRESET') || 
+               msg.includes('EPIPE') || 
+               msg.includes('ECONNABORTED') ||
+               msg.includes('EINVAL');
     }
 }
 
 /**
  * HTTP Server implementation
  */
-export class Server extends EventEmitter {
+export class Server extends TinyEmitter {
     constructor(requestListener, options = {}) {
         super();
         this._requestListener = requestListener;
         this._connections = new Set();
         this._listening = false;
         this._server = null;
-        this._debug = options.debug || false;
+        this._debug = !!options.debug;
     }
 
     listen(port, hostname, backlog, callback) {
@@ -293,12 +362,13 @@ export class Server extends EventEmitter {
                         this._handleConnection(clientHandle);
                     } catch (err) {
                         // Ignore common connection errors but log others
-                        if (
-                            !err.message.includes('ECONNRESET') &&
-              !err.message.includes('EPIPE') &&
-              !err.message.includes('ECONNABORTED')
-                        ) {
+                        if (!this._isCommonConnectionError(err)) {
                             console.error('Connection error:', err);
+                        }
+                        
+                        // Break loop on certain errors
+                        if (err.name === 'AbortError' || (err.message && err.message.includes('closed'))) {
+                            break;
                         }
                     }
                 }
@@ -315,7 +385,7 @@ export class Server extends EventEmitter {
         this.emit('listening');
 
         if (callback) {
-            callback();
+            setImmediate(callback);
         }
 
         return this;
@@ -324,9 +394,8 @@ export class Server extends EventEmitter {
     close(callback) {
         if (!this._listening) {
             if (callback) {
-                setTimeout(() => callback(new Error('Not running')), 0);
+                setImmediate(() => callback(new Error('Not running')));
             }
-
             return this;
         }
 
@@ -334,19 +403,27 @@ export class Server extends EventEmitter {
 
         // Close all connections
         for (const connection of this._connections) {
-            connection.close();
+            try {
+                connection.close();
+            } catch (err) {
+                // Ignore errors when closing
+            }
         }
 
         this._connections.clear();
 
         // Close the server
-        this._server.close(() => {
-            this.emit('close');
+        if (this._server) {
+            this._server.close(() => {
+                this.emit('close');
 
-            if (callback) {
-                callback();
-            }
-        });
+                if (callback) {
+                    callback();
+                }
+            });
+        } else if (callback) {
+            setImmediate(callback);
+        }
 
         return this;
     }
@@ -359,10 +436,7 @@ export class Server extends EventEmitter {
         });
         let currentRequest = null;
         let currentResponse = null;
-
-        if (this._debug) {
-            console.debug('New connection handler created');
-        }
+        let connectionClosed = false;
 
         // Create a simple read loop
         const readLoop = async () => {
@@ -370,22 +444,22 @@ export class Server extends EventEmitter {
                 const buf = new Uint8Array(65536);
 
                 // eslint-disable-next-line no-constant-condition
-                while (true) {
+                while (!connectionClosed) {
                     try {
                         const nread = await handle.read(buf);
 
                         if (nread === null) {
                             // Connection closed
+                            connectionClosed = true;
                             break;
                         }
 
                         // Convert chunk to string and add to buffer
                         const chunk = new TextDecoder().decode(buf.subarray(0, nread));
-
                         buffer += chunk;
 
                         // Process as much as possible
-                        while (buffer.length > 0) {
+                        while (buffer.length > 0 && !connectionClosed) {
                             try {
                                 const processed = parser.execute(buffer);
 
@@ -413,17 +487,17 @@ export class Server extends EventEmitter {
                                     // Determine if we should keep the connection alive
                                     const connectionHeader = (
                                         result.headers['Connection'] ||
-                    result.headers['connection'] ||
-                    ''
+                                        result.headers['connection'] ||
+                                        ''
                                     ).toLowerCase();
 
                                     currentResponse._shouldKeepAlive =
-                    (result.httpMajor === 1 &&
-                      result.httpMinor === 1 &&
-                      connectionHeader !== 'close') ||
-                    (result.httpMajor === 1 &&
-                      result.httpMinor === 0 &&
-                      connectionHeader === 'keep-alive');
+                                        (result.httpMajor === 1 &&
+                                         result.httpMinor === 1 &&
+                                         connectionHeader !== 'close') ||
+                                        (result.httpMajor === 1 &&
+                                         result.httpMinor === 0 &&
+                                         connectionHeader === 'keep-alive');
 
                                     try {
                                         // Emit the request event
@@ -436,11 +510,11 @@ export class Server extends EventEmitter {
 
                                         // Ensure response is sent if requestListener didn't call end()
                                         // Only auto-end if not marked as processing
-                                        setTimeout(() => {
+                                        setImmediate(() => {
                                             if (!currentResponse.finished && !currentResponse._processing) {
                                                 currentResponse.end();
                                             }
-                                        }, 0);
+                                        });
                                     } catch (err) {
                                         // Ignore errors in request handlers but log them
                                         if (this._debug) {
@@ -448,22 +522,35 @@ export class Server extends EventEmitter {
                                         }
 
                                         // Only send error response if not marked as processing
-                                        if (!currentResponse._processing) {
-                                            currentResponse.writeHead(500);
-                                            currentResponse.end('Internal Server Error\n');
+                                        if (!currentResponse.finished && !currentResponse._processing) {
+                                            try {
+                                                currentResponse.writeHead(500, { 'Content-Type': 'text/plain' });
+                                                currentResponse.end('Internal Server Error\n');
+                                            } catch (endErr) {
+                                                // Failed to send error response, just close the connection
+                                                connectionClosed = true;
+                                                handle.close();
+                                            }
                                         }
                                     }
 
-                                    // Reset parser for next request
-                                    parser.reset();
+                                    // Reset parser for next request if connection is kept alive
+                                    if (currentResponse._shouldKeepAlive) {
+                                        parser.reset();
+                                    } else {
+                                        connectionClosed = true;
+                                        break;
+                                    }
+                                } else {
+                                    // No complete message yet, break inner loop to read more data
+                                    break;
                                 }
                             } catch (err) {
                                 // Handle parse errors
-                                if (
-                                    !err.message.includes('HPE_INVALID_METHOD') &&
-                  !err.message.includes('HPE_INVALID_VERSION')
-                                ) {
-                                    if (this._debug) {
+                                if (this._debug) {
+                                    const shouldLog = !err.message.includes('HPE_INVALID_METHOD') &&
+                                                    !err.message.includes('HPE_INVALID_VERSION');
+                                    if (shouldLog) {
                                         console.error(
                                             'HTTP parse error:',
                                             err,
@@ -472,22 +559,20 @@ export class Server extends EventEmitter {
                                         );
                                     }
                                 }
-
+                                
+                                connectionClosed = true;
                                 handle.close();
                                 this._connections.delete(handle);
-
                                 return;
                             }
                         }
                     } catch (err) {
                         // Ignore common socket errors
-                        if (
-                            !err.message.includes('ECONNRESET') &&
-              !err.message.includes('EPIPE')
-                        ) {
+                        if (!this._isCommonSocketError(err)) {
                             console.error('Socket error:', err);
                         }
-
+                        
+                        connectionClosed = true;
                         break;
                     }
                 }
@@ -497,7 +582,9 @@ export class Server extends EventEmitter {
                 }
             } finally {
                 try {
-                    handle.close();
+                    if (!connectionClosed) {
+                        handle.close();
+                    }
                 } catch (err) {
                     // Ignore close errors
                 }
@@ -508,6 +595,22 @@ export class Server extends EventEmitter {
 
         // Start the read loop
         readLoop();
+    }
+    
+    _isCommonConnectionError(err) {
+        const msg = err.message || '';
+        return msg.includes('ECONNRESET') || 
+               msg.includes('EPIPE') || 
+               msg.includes('ECONNABORTED') ||
+               msg.includes('EINVAL');
+    }
+    
+    _isCommonSocketError(err) {
+        const msg = err.message || '';
+        return msg.includes('ECONNRESET') || 
+               msg.includes('EPIPE') || 
+               msg.includes('ECONNABORTED') ||
+               msg.includes('EINVAL');
     }
 }
 
