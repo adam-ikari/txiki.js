@@ -14,7 +14,7 @@
     "dist/windows-arm64"
   ],
   "scripts": {
-    "build": "cmake -B build && cmake --build build -j$(nporc) && strip dist/linux-x64/tjs",
+    "build": "make js && make",
     "prepublishOnly": "yarn build"
   },
   "bin": {
