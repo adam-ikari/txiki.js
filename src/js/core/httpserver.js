@@ -368,16 +368,14 @@ export class Server extends EventEmitter {
         const readLoop = async () => {
             try {
                 const buf = new Uint8Array(65536);
-                let running = true;
 
                 // eslint-disable-next-line no-constant-condition
-                while (running) {
+                while (true) {
                     try {
                         const nread = await handle.read(buf);
 
                         if (nread === null) {
                             // Connection closed
-                            running = false;
                             break;
                         }
 
@@ -437,8 +435,9 @@ export class Server extends EventEmitter {
                                         }
 
                                         // Ensure response is sent if requestListener didn't call end()
+                                        // Only auto-end if not marked as processing
                                         setTimeout(() => {
-                                            if (!currentResponse.finished) {
+                                            if (!currentResponse.finished && !currentResponse._processing) {
                                                 currentResponse.end();
                                             }
                                         }, 0);
@@ -448,8 +447,11 @@ export class Server extends EventEmitter {
                                             console.error('Request handler error:', err);
                                         }
 
-                                        currentResponse.writeHead(500);
-                                        currentResponse.end('Internal Server Error\n');
+                                        // Only send error response if not marked as processing
+                                        if (!currentResponse._processing) {
+                                            currentResponse.writeHead(500);
+                                            currentResponse.end('Internal Server Error\n');
+                                        }
                                     }
 
                                     // Reset parser for next request
@@ -473,7 +475,6 @@ export class Server extends EventEmitter {
 
                                 handle.close();
                                 this._connections.delete(handle);
-                                running = false;
 
                                 return;
                             }
@@ -482,13 +483,11 @@ export class Server extends EventEmitter {
                         // Ignore common socket errors
                         if (
                             !err.message.includes('ECONNRESET') &&
-              !err.message.includes('EPIPE') &&
-              !err.message.includes('EINVAL')
+              !err.message.includes('EPIPE')
                         ) {
                             console.error('Socket error:', err);
                         }
 
-                        running = false;
                         break;
                     }
                 }

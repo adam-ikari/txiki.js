@@ -41,6 +41,20 @@ function getMimeType(filePath) {
 }
 
 function sendError(res, statusCode, message) {
+    // 检查响应头是否已经发送
+    if (res.headersSent) {
+        console.warn(`Headers already sent, cannot send error ${statusCode}`);
+        // 如果响应头已经发送，则只记录错误并结束响应（如果尚未结束）
+        if (!res.finished) {
+            try {
+                res.end();
+            } catch (endError) {
+                console.error('Failed to end response:', endError);
+            }
+        }
+        return;
+    }
+    
     res.writeHead(statusCode, { 'Content-Type': 'text/html' });
     res.end(`
         <!DOCTYPE html>
@@ -57,6 +71,18 @@ function sendError(res, statusCode, message) {
 }
 
 async function serveFile(filePath, res) {
+    // 确保_processing标志被设置
+    if (!res._processing) {
+        res._processing = true;
+    }
+    
+    // 在函数开始处检查响应头是否已经发送
+    if (res.headersSent) {
+        console.warn('Headers already sent, cannot serve file:', filePath);
+        res._processing = false;
+        return;
+    }
+    
     try {
         // Check if file exists and get stats
         const stats = await tjs.stat(filePath);
@@ -66,9 +92,21 @@ async function serveFile(filePath, res) {
             const indexPath = path.join(filePath, 'index.html');
             try {
                 await tjs.stat(indexPath);
+                // 检查是否已经发送了响应头
+                if (res.headersSent) {
+                    console.warn('Headers already sent, cannot serve index.html');
+                    res._processing = false;
+                    return;
+                }
                 return serveFile(indexPath, res);
             } catch {
                 // Generate directory listing
+                // 检查是否已经发送了响应头
+                if (res.headersSent) {
+                    console.warn('Headers already sent, cannot serve directory listing');
+                    res._processing = false;
+                    return;
+                }
                 return serveDirectoryListing(filePath, res);
             }
         }
@@ -76,6 +114,13 @@ async function serveFile(filePath, res) {
         // Read and serve the file
         const content = await tjs.readFile(filePath);
         const mimeType = getMimeType(filePath);
+        
+        // 在发送响应前检查是否已经发送过响应头
+        if (res.headersSent) {
+            console.warn('Headers already sent, cannot serve file:', filePath);
+            res._processing = false;
+            return;
+        }
         
         res.writeHead(200, {
             'Content-Type': mimeType,
@@ -86,20 +131,53 @@ async function serveFile(filePath, res) {
         res.end(content);
         
     } catch (error) {
-        if (error.errno === tjs.errno.ENOENT) {
-            sendError(res, 404, 'File not found');
-        } else if (error.errno === tjs.errno.EACCES) {
-            sendError(res, 403, 'Access denied');
+        // 在调用sendError前检查响应状态
+        if (!res.headersSent) {
+            if (error.code === 'ENOENT') {
+                sendError(res, 404, 'File not found');
+            } else if (error.code === 'EACCES') {
+                sendError(res, 403, 'Access denied');
+            } else {
+                console.error('Error serving file:', error);
+                sendError(res, 500, 'Internal server error');
+            }
         } else {
-            console.error('Error serving file:', error);
-            sendError(res, 500, 'Internal server error');
+            console.error('Error after headers sent:', error);
+            // 如果响应头已经发送，只能尝试结束响应
+            if (!res.writableEnded) {
+                try {
+                    res.end();
+                } catch (endError) {
+                    console.error('Failed to end response:', endError);
+                }
+            }
         }
+    } finally {
+        // 清除_processing标志
+        res._processing = false;
     }
 }
 
 async function serveDirectoryListing(dirPath, res) {
+    // 确保_processing标志被设置
+    if (!res._processing) {
+        res._processing = true;
+    }
+    
+    // 检查响应头是否已经发送
+    if (res.headersSent) {
+        console.warn('Headers already sent, cannot serve directory listing for:', dirPath);
+        res._processing = false;
+        return;
+    }
+    
     try {
-        const files = await tjs.readdir(dirPath);
+        // 使用 readDir 并通过异步迭代获取文件列表
+        const dirIter = await tjs.readDir(dirPath);
+        const files = [];
+        for await (const item of dirIter) {
+            files.push(item.name);
+        }
         
         let html = `
         <!DOCTYPE html>
@@ -142,16 +220,48 @@ async function serveDirectoryListing(dirPath, res) {
         </body>
         </html>`;
         
+        // 检查是否已经发送了响应头
+        if (res.headersSent) {
+            console.warn('Headers already sent, cannot serve directory listing');
+            res._processing = false;
+            return;
+        }
+        
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(html);
         
     } catch (error) {
         console.error('Error reading directory:', error);
-        sendError(res, 500, 'Could not read directory');
+        // 检查是否已经发送了响应头，避免重复发送
+        if (!res.headersSent) {
+            if (error.code === 'ENOENT') {
+                sendError(res, 404, 'Directory not found');
+            } else if (error.code === 'EACCES') {
+                sendError(res, 403, 'Access denied');
+            } else {
+                sendError(res, 500, 'Could not read directory');
+            }
+        } else {
+            console.error('Error after headers sent:', error);
+            // 如果响应头已经发送，则只记录错误并结束响应（如果尚未结束）
+            if (!res.writableEnded) {
+                try {
+                    res.end();
+                } catch (endError) {
+                    console.error('Failed to end response:', endError);
+                }
+            }
+        }
+    } finally {
+        // 清除_processing标志
+        res._processing = false;
     }
 }
 
-const server = tjs.createServer(async (req, res) => {
+const server = tjs.createServer((req, res) => {
+    // 设置_processing标志以防止HTTP服务器自动结束响应
+    res._processing = true;
+    
     const url = new URL(req.url, `http://localhost:${options.port}`);
     let filePath = decodeURIComponent(url.pathname);
     
@@ -172,7 +282,8 @@ const server = tjs.createServer(async (req, res) => {
         return;
     }
     
-    await serveFile(filePath, res);
+    // 处理文件请求
+    serveFile(filePath, res);
 });
 
 server.on('listening', () => {
