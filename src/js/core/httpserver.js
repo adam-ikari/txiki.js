@@ -1,3 +1,5 @@
+// Batch processing for better CPU utilization
+const BATCH_SIZE = 16;
 /**
  * HTTP Server implementation for txiki.js using TCP sockets and llhttp parser
  * Following Node.js API style conventions
@@ -569,6 +571,8 @@ export class Server extends TinyEmitter {
         this._maxConnections = options.maxConnections || 0; // 0 means no limit
         this._timeout = options.timeout || 120000; // 2 minutes default
         this._connectionsCount = 0;
+        this._requestBatch = [];
+        this._processingBatch = false;
     }
 
     listen(port, hostname, backlog, callback) {
@@ -769,19 +773,19 @@ export class Server extends TinyEmitter {
                                          result.httpMinor === 0 &&
                                          connectionHeader === 'keep-alive');
 
-                                    try {
-                                        // Emit the request event
-                                        this.emit('request', currentRequest, currentResponse);
+                                    // Batch process requests for better CPU utilization
+                                    this._requestBatch.push({
+                                        req: currentRequest,
+                                        res: currentResponse
+                                    });
 
-                                        // Call the request listener if provided
-                                        if (this._requestListener) {
-                                            this._requestListener(currentRequest, currentResponse);
-                                        }
-                                    } catch (err) {
-                                        // Ignore errors in request handlers but log them
-                                        if (this._debug) {
-                                            console.error('Request handler error:', err);
-                                        }
+                                    if (this._requestBatch.length >= BATCH_SIZE || !currentResponse._shouldKeepAlive) {
+                                        this._processBatch();
+                                    } else if (!this._processingBatch) {
+                                        this._processingBatch = true;
+                                        schedule(() => {
+                                            this._processBatch();
+                                        });
                                     }
 
                                     // Reset parser for next request if connection is kept alive
@@ -867,6 +871,31 @@ export class Server extends TinyEmitter {
 
         // Start the read loop
         readLoop();
+    }
+
+    _processBatch() {
+        this._processingBatch = false;
+        const batch = this._requestBatch.splice(0, BATCH_SIZE);
+        
+        for (const { req, res } of batch) {
+            try {
+                // Emit the request event
+                this.emit('request', req, res);
+
+                // Call the request listener if provided
+                if (this._requestListener) {
+                    this._requestListener(req, res);
+                }
+            } catch (err) {
+                // Ignore errors in request handlers but log them
+                if (this._debug) {
+                    console.error('Request handler error:', err);
+                }
+            } finally {
+                // Release request object back to pool
+                objectPool.releaseIncomingMessage(req);
+            }
+        }
     }
 
     _isCommonConnectionError(err) {

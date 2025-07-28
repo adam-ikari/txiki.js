@@ -1,6 +1,6 @@
 // Static file server example using tjs:httpserver
 //
-// Usage: tjs run file-server.js [--port 3002] [--dir ./public]
+// Usage: tjs run file-server.js [--port 3002] [--dir ./public] [--max-connections 100]
 
 import getopts from 'tjs:getopts';
 import path from 'tjs:path';
@@ -8,11 +8,13 @@ import path from 'tjs:path';
 const options = getopts(tjs.args.slice(2), {
     alias: { 
         port: 'p',
-        dir: 'd'
+        dir: 'd',
+        'max-connections': 'm'
     },
     default: { 
         port: 3002,
-        dir: './public'
+        dir: './public',
+        'max-connections': 100
     }
 });
 
@@ -248,7 +250,6 @@ async function serveDirectoryListing(dirPath, res) {
 }
 
 const server = tjs.createServer((req, res) => {
-    // 不再需要设置_processing标志，因为 HTTP 服务器现在与 Node.js 行为完全兼容
     
     const url = new URL(req.url, `http://localhost:${options.port}`);
     let filePath = decodeURIComponent(url.pathname);
@@ -274,9 +275,17 @@ const server = tjs.createServer((req, res) => {
     serveFile(filePath, res);
 });
 
+// 设置最大连接数
+if (options['max-connections'] > 0) {
+    server.maxConnections = options['max-connections'];
+}
+
 server.on('listening', () => {
     console.log(`File server listening on http://localhost:${options.port}`);
     console.log(`Serving files from: ${path.resolve(options.dir)}`);
+    if (options['max-connections'] > 0) {
+        console.log(`Max connections: ${options['max-connections']}`);
+    }
     console.log('\nFeatures:');
     console.log('  - Static file serving');
     console.log('  - Directory listings');
