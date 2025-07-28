@@ -20,39 +20,41 @@ class TinyEmitter {
         }
 
         const events = this._events;
-        
+
         if (!events[event]) {
             events[event] = [];
         }
 
         events[event].push(listener);
-        
+
         return this;
     }
 
     once(event, listener) {
         const self = this;
-        
+
         function onceListener() {
             self.removeListener(event, onceListener);
             listener.apply(this, arguments);
         }
 
         onceListener.listener = listener;
-        
+
         return this.on(event, onceListener);
     }
 
     removeListener(event, listener) {
         const events = this._events;
-        
+
         if (!events[event] || !listener) {
             return this;
         }
 
         const listeners = events[event];
-        const index = listeners.findIndex(l => l === listener || l.listener === listener);
-        
+        const index = listeners.findIndex(
+            l => l === listener || l.listener === listener
+        );
+
         if (index !== -1) {
             listeners.splice(index, 1);
         }
@@ -62,7 +64,7 @@ class TinyEmitter {
 
     emit(event) {
         const events = this._events;
-        
+
         if (!events[event]) {
             return false;
         }
@@ -76,26 +78,40 @@ class TinyEmitter {
 
         return true;
     }
-    
+
     removeAllListeners() {
         this._events = Object.create(null);
+
         return this;
+    }
+
+    // Add missing EventTarget methods for better compatibility
+    addListener(event, listener) {
+        return this.on(event, listener);
+    }
+
+    off(event, listener) {
+        return this.removeListener(event, listener);
     }
 }
 
 // Use queueMicrotask if available, otherwise fallback to setImmediate
-const schedule = globalThis.queueMicrotask || globalThis.setImmediate || function(fn) {
-    setTimeout(fn, 0);
-};
+const schedule =
+  globalThis.queueMicrotask ||
+  globalThis.setImmediate ||
+  function (fn) {
+      setTimeout(fn, 0);
+  };
 
 // Object pools for reuse
 const objectPool = {
     incomingMessages: [],
     serverResponses: [],
     parsers: [],
-    
+
     getIncomingMessage(socket) {
         const msg = this.incomingMessages.pop();
+
         if (msg) {
             msg.socket = socket;
             msg.headers = Object.create(null);
@@ -106,20 +122,24 @@ const objectPool = {
             msg.httpVersionMinor = 1;
             msg.complete = false;
             msg._body = '';
+
             return msg;
         }
+
         return new IncomingMessage(socket);
     },
-    
+
     releaseIncomingMessage(msg) {
-        if (this.incomingMessages.length < 32) { // Limit pool size
+        if (this.incomingMessages.length < 32) {
+            // Limit pool size
             msg.removeAllListeners();
             this.incomingMessages.push(msg);
         }
     },
-    
+
     getServerResponse(socket) {
         const res = this.serverResponses.pop();
+
         if (res) {
             res.socket = socket;
             res.headersSent = false;
@@ -130,35 +150,42 @@ const objectPool = {
             res._bodyChunks.length = 0;
             res._bodyLength = 0;
             res._shouldKeepAlive = true;
+
             return res;
         }
+
         return new ServerResponse(socket);
     },
-    
+
     releaseServerResponse(res) {
-        if (this.serverResponses.length < 32) { // Limit pool size
+        if (this.serverResponses.length < 32) {
+            // Limit pool size
             res.removeAllListeners();
             this.serverResponses.push(res);
         }
     },
-    
+
     getParser() {
         const parser = this.parsers.pop();
+
         if (parser) {
             parser.reset();
+
             return parser;
         }
+
         return new LLHttp('request', {
             lenient: true,
             allowCustomMethods: true,
         });
     },
-    
+
     releaseParser(parser) {
-        if (this.parsers.length < 16) { // Limit pool size
+        if (this.parsers.length < 16) {
+            // Limit pool size
             this.parsers.push(parser);
         }
-    }
+    },
 };
 
 // Shared TextEncoder/Decoder instances
@@ -166,86 +193,86 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 // Status code to message mapping
-const STATUS_CODES = {
-  100: 'Continue',
-  101: 'Switching Protocols',
-  102: 'Processing',
-  103: 'Early Hints',
-  200: 'OK',
-  201: 'Created',
-  202: 'Accepted',
-  203: 'Non-Authoritative Information',
-  204: 'No Content',
-  205: 'Reset Content',
-  206: 'Partial Content',
-  207: 'Multi-Status',
-  208: 'Already Reported',
-  226: 'IM Used',
-  300: 'Multiple Choices',
-  301: 'Moved Permanently',
-  302: 'Found',
-  303: 'See Other',
-  304: 'Not Modified',
-  305: 'Use Proxy',
-  307: 'Temporary Redirect',
-  308: 'Permanent Redirect',
-  400: 'Bad Request',
-  401: 'Unauthorized',
-  402: 'Payment Required',
-  403: 'Forbidden',
-  404: 'Not Found',
-  405: 'Method Not Allowed',
-  406: 'Not Acceptable',
-  407: 'Proxy Authentication Required',
-  408: 'Request Timeout',
-  409: 'Conflict',
-  410: 'Gone',
-  411: 'Length Required',
-  412: 'Precondition Failed',
-  413: 'Payload Too Large',
-  414: 'URI Too Long',
-  415: 'Unsupported Media Type',
-  416: 'Range Not Satisfiable',
-  417: 'Expectation Failed',
-  418: 'I\'m a Teapot',
-  421: 'Misdirected Request',
-  422: 'Unprocessable Entity',
-  423: 'Locked',
-  424: 'Failed Dependency',
-  425: 'Too Early',
-  426: 'Upgrade Required',
-  428: 'Precondition Required',
-  429: 'Too Many Requests',
-  431: 'Request Header Fields Too Large',
-  451: 'Unavailable For Legal Reasons',
-  500: 'Internal Server Error',
-  501: 'Not Implemented',
-  502: 'Bad Gateway',
-  503: 'Service Unavailable',
-  504: 'Gateway Timeout',
-  505: 'HTTP Version Not Supported',
-  506: 'Variant Also Negotiates',
-  507: 'Insufficient Storage',
-  508: 'Loop Detected',
-  509: 'Bandwidth Limit Exceeded',
-  510: 'Not Extended',
-  511: 'Network Authentication Required'
+export const STATUS_CODES = {
+    100: 'Continue',
+    101: 'Switching Protocols',
+    102: 'Processing',
+    103: 'Early Hints',
+    200: 'OK',
+    201: 'Created',
+    202: 'Accepted',
+    203: 'Non-Authoritative Information',
+    204: 'No Content',
+    205: 'Reset Content',
+    206: 'Partial Content',
+    207: 'Multi-Status',
+    208: 'Already Reported',
+    226: 'IM Used',
+    300: 'Multiple Choices',
+    301: 'Moved Permanently',
+    302: 'Found',
+    303: 'See Other',
+    304: 'Not Modified',
+    305: 'Use Proxy',
+    307: 'Temporary Redirect',
+    308: 'Permanent Redirect',
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    402: 'Payment Required',
+    403: 'Forbidden',
+    404: 'Not Found',
+    405: 'Method Not Allowed',
+    406: 'Not Acceptable',
+    407: 'Proxy Authentication Required',
+    408: 'Request Timeout',
+    409: 'Conflict',
+    410: 'Gone',
+    411: 'Length Required',
+    412: 'Precondition Failed',
+    413: 'Payload Too Large',
+    414: 'URI Too Long',
+    415: 'Unsupported Media Type',
+    416: 'Range Not Satisfiable',
+    417: 'Expectation Failed',
+    418: 'I\'m a Teapot',
+    421: 'Misdirected Request',
+    422: 'Unprocessable Entity',
+    423: 'Locked',
+    424: 'Failed Dependency',
+    425: 'Too Early',
+    426: 'Upgrade Required',
+    428: 'Precondition Required',
+    429: 'Too Many Requests',
+    431: 'Request Header Fields Too Large',
+    451: 'Unavailable For Legal Reasons',
+    500: 'Internal Server Error',
+    501: 'Not Implemented',
+    502: 'Bad Gateway',
+    503: 'Service Unavailable',
+    504: 'Gateway Timeout',
+    505: 'HTTP Version Not Supported',
+    506: 'Variant Also Negotiates',
+    507: 'Insufficient Storage',
+    508: 'Loop Detected',
+    509: 'Bandwidth Limit Exceeded',
+    510: 'Not Extended',
+    511: 'Network Authentication Required',
 };
 
 // Common headers cache
 const COMMON_HEADERS = {
     'content-type': 'Content-Type',
     'content-length': 'Content-Length',
-    'connection': 'Connection',
+    connection: 'Connection',
     'keep-alive': 'Keep-Alive',
-    'host': 'Host',
+    host: 'Host',
     'user-agent': 'User-Agent',
-    'accept': 'Accept',
+    accept: 'Accept',
     'accept-encoding': 'Accept-Encoding',
     'accept-language': 'Accept-Language',
     'cache-control': 'Cache-Control',
-    'date': 'Date',
-    'server': 'Server'
+    date: 'Date',
+    server: 'Server',
 };
 
 /**
@@ -271,17 +298,18 @@ export class IncomingMessage extends TinyEmitter {
     }
 
     get statusCode() {
-        // For requests, this doesn't apply, but keeping for compatibility
+    // For requests, this doesn't apply, but keeping for compatibility
         return undefined;
     }
 
     get statusMessage() {
-        // For requests, this doesn't apply, but keeping for compatibility
+    // For requests, this doesn't apply, but keeping for compatibility
         return undefined;
     }
-    
+
     removeAllListeners() {
         this._events = Object.create(null);
+
         return this;
     }
 }
@@ -308,16 +336,18 @@ export class ServerResponse extends TinyEmitter {
         if (this.headersSent) {
             throw new Error('Headers already sent');
         }
-        
+
         // Normalize header name
         const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+
         this.headers[normalizedName] = value;
-        
+
         return this;
     }
 
     getHeader(name) {
         const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+
         return this.headers[normalizedName];
     }
 
@@ -327,9 +357,20 @@ export class ServerResponse extends TinyEmitter {
         }
 
         const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+
         delete this.headers[normalizedName];
-        
+
         return this;
+    }
+
+    getHeaderNames() {
+        return Object.keys(this.headers);
+    }
+
+    hasHeader(name) {
+        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+
+        return this.headers[normalizedName] !== undefined;
     }
 
     writeHead(statusCode, statusMessage, headers) {
@@ -366,7 +407,7 @@ export class ServerResponse extends TinyEmitter {
         }
 
         let buffer;
-        
+
         if (typeof chunk === 'string') {
             buffer = textEncoder.encode(chunk);
         } else if (chunk instanceof Uint8Array) {
@@ -387,7 +428,10 @@ export class ServerResponse extends TinyEmitter {
 
     end(data, encoding, callback) {
         if (this.finished) {
-            if (callback) schedule(callback);
+            if (callback) {
+                schedule(callback);
+            }
+
             return this;
         }
 
@@ -419,7 +463,7 @@ export class ServerResponse extends TinyEmitter {
     }
 
     _sendResponse() {
-        // Ensure headers are sent
+    // Ensure headers are sent
         if (!this.headersSent) {
             // Set Content-Length if not already set
             if (!this.headers['Content-Length'] && !this.headers['content-length']) {
@@ -439,7 +483,7 @@ export class ServerResponse extends TinyEmitter {
         try {
             // Efficiently concatenate body chunks
             let body;
-            
+
             if (this._bodyChunks.length === 0) {
                 body = new Uint8Array(0);
             } else if (this._bodyChunks.length === 1) {
@@ -447,7 +491,7 @@ export class ServerResponse extends TinyEmitter {
             } else {
                 body = new Uint8Array(this._bodyLength);
                 let offset = 0;
-                
+
                 for (const chunk of this._bodyChunks) {
                     body.set(chunk, offset);
                     offset += chunk.length;
@@ -470,32 +514,36 @@ export class ServerResponse extends TinyEmitter {
                 // Directly concatenate Uint8Array instead of converting to string
                 const headersBytes = textEncoder.encode(response);
                 const responseBytes = new Uint8Array(headersBytes.length + body.length);
+
                 responseBytes.set(headersBytes, 0);
                 responseBytes.set(body, headersBytes.length);
-                
+
                 const writePromise = this.socket.write(responseBytes);
-                
+
                 writePromise
                     .then(() => {
                         // Release resources
                         this._cleanup();
-                        
+
                         // Close connection if not keep-alive
                         if (!this._shouldKeepAlive) {
                             this.socket.close();
                         }
+
                         this.emit('close');
                     })
                     .catch(err => {
                         // Release resources
                         this._cleanup();
-                        
+
                         // Ignore common socket errors
                         if (!this._isCommonSocketError(err)) {
                             console.error('Failed to write response:', err);
                         }
+
                         this.socket.close();
                     });
+
                 return;
             }
 
@@ -506,53 +554,63 @@ export class ServerResponse extends TinyEmitter {
                 .then(() => {
                     // Release resources
                     this._cleanup();
-                    
+
                     // Close connection if not keep-alive
                     if (!this._shouldKeepAlive) {
                         this.socket.close();
                     }
+
                     this.emit('close');
                 })
                 .catch(err => {
                     // Release resources
                     this._cleanup();
-                    
+
                     // Ignore common socket errors
                     if (!this._isCommonSocketError(err)) {
                         console.error('Failed to write response:', err);
                     }
+
                     this.socket.close();
                 });
         } catch (err) {
             // Release resources
             this._cleanup();
-            
+
             console.error('Failed to create response:', err);
             this.socket.close();
         }
     }
-    
+
     _cleanup() {
-        // Clear body chunks to free memory
+    // Clear body chunks to free memory
         this._bodyChunks.length = 0;
         this._bodyLength = 0;
-        
+
         // Release response object back to pool
         objectPool.releaseServerResponse(this);
     }
 
     _isCommonSocketError(err) {
         const msg = err.message || '';
-        
-        return msg.includes('ECONNRESET') || 
-               msg.includes('EPIPE') || 
-               msg.includes('ECONNABORTED') ||
-               msg.includes('EINVAL');
+
+        return (
+            msg.includes('ECONNRESET') ||
+      msg.includes('EPIPE') ||
+      msg.includes('ECONNABORTED') ||
+      msg.includes('EINVAL')
+        );
     }
-    
+
     removeAllListeners() {
         this._events = Object.create(null);
+
         return this;
+    }
+
+    // Add getHeaders method for better compatibility
+    getHeaders() {
+        return Object.assign({}, this.headers);
     }
 }
 
@@ -573,13 +631,15 @@ export class Server extends TinyEmitter {
         this._connectionsCount = 0;
         this._requestBatch = [];
         this._processingBatch = false;
+        // Make STATUS_CODES available on the server instance
+        this.STATUS_CODES = STATUS_CODES;
     }
 
     listen(port, hostname, backlog, callback) {
         if (this._closed) {
             throw new Error('Server has been closed');
         }
-        
+
         if (typeof hostname === 'function') {
             callback = hostname;
             hostname = undefined;
@@ -613,7 +673,10 @@ export class Server extends TinyEmitter {
                         }
 
                         // Check max connections limit
-                        if (this._maxConnections > 0 && this._connectionsCount >= this._maxConnections) {
+                        if (
+                            this._maxConnections > 0 &&
+              this._connectionsCount >= this._maxConnections
+                        ) {
                             clientHandle.close();
                             continue;
                         }
@@ -633,14 +696,17 @@ export class Server extends TinyEmitter {
                         if (this._closed) {
                             break;
                         }
-                        
+
                         // Ignore common connection errors but log others
                         if (!this._isCommonConnectionError(err)) {
                             console.error('Connection error:', err);
                         }
 
                         // Break loop on certain errors
-                        if (err.name === 'AbortError' || (err.message && err.message.includes('closed'))) {
+                        if (
+                            err.name === 'AbortError' ||
+              (err.message && err.message.includes('closed'))
+                        ) {
                             break;
                         }
                     }
@@ -671,6 +737,7 @@ export class Server extends TinyEmitter {
             if (callback) {
                 schedule(() => callback(new Error('Not running')));
             }
+
             return this;
         }
 
@@ -730,6 +797,7 @@ export class Server extends TinyEmitter {
 
                         // Convert chunk to string and add to buffer
                         const chunk = textDecoder.decode(buf.subarray(0, nread));
+
                         buffer += chunk;
 
                         // Process as much as possible
@@ -761,25 +829,28 @@ export class Server extends TinyEmitter {
                                     // Determine if we should keep the connection alive
                                     const connectionHeader = (
                                         result.headers['Connection'] ||
-                                        result.headers['connection'] ||
-                                        ''
+                    result.headers['connection'] ||
+                    ''
                                     ).toLowerCase();
 
                                     currentResponse._shouldKeepAlive =
-                                        (result.httpMajor === 1 &&
-                                         result.httpMinor === 1 &&
-                                         connectionHeader !== 'close') ||
-                                        (result.httpMajor === 1 &&
-                                         result.httpMinor === 0 &&
-                                         connectionHeader === 'keep-alive');
+                    (result.httpMajor === 1 &&
+                      result.httpMinor === 1 &&
+                      connectionHeader !== 'close') ||
+                    (result.httpMajor === 1 &&
+                      result.httpMinor === 0 &&
+                      connectionHeader === 'keep-alive');
 
                                     // Batch process requests for better CPU utilization
                                     this._requestBatch.push({
                                         req: currentRequest,
-                                        res: currentResponse
+                                        res: currentResponse,
                                     });
 
-                                    if (this._requestBatch.length >= BATCH_SIZE || !currentResponse._shouldKeepAlive) {
+                                    if (
+                                        this._requestBatch.length >= BATCH_SIZE ||
+                    !currentResponse._shouldKeepAlive
+                                    ) {
                                         this._processBatch();
                                     } else if (!this._processingBatch) {
                                         this._processingBatch = true;
@@ -794,22 +865,25 @@ export class Server extends TinyEmitter {
                                         // unless explicitly closed by the server
                                         if (result.httpMajor === 1 && result.httpMinor === 1) {
                                             // If no Connection header was specified, default to keep-alive
-                                            if (!result.headers['Connection'] && !result.headers['connection']) {
+                                            if (
+                                                !result.headers['Connection'] &&
+                        !result.headers['connection']
+                                            ) {
                                                 currentResponse._shouldKeepAlive = true;
                                                 currentResponse.setHeader('Connection', 'keep-alive');
                                             }
                                         }
-                                        
+
                                         // Reset parser for the next request
                                         parser.reset();
-                                        
+
                                         // Continue listening for more requests on this connection
                                     } else {
                                         // If we shouldn't keep the connection alive, close after this request
                                         connectionClosed = true;
                                         break;
                                     }
-                                    
+
                                     // Release request object back to pool
                                     objectPool.releaseIncomingMessage(currentRequest);
                                 } else {
@@ -819,9 +893,10 @@ export class Server extends TinyEmitter {
                             } catch (err) {
                                 // Handle parse errors
                                 if (this._debug) {
-                                    const shouldLog = !err.message.includes('HPE_INVALID_METHOD') &&
-                                                    !err.message.includes('HPE_INVALID_VERSION');
-                                    
+                                    const shouldLog =
+                    !err.message.includes('HPE_INVALID_METHOD') &&
+                    !err.message.includes('HPE_INVALID_VERSION');
+
                                     if (shouldLog) {
                                         console.error(
                                             'HTTP parse error:',
@@ -835,8 +910,12 @@ export class Server extends TinyEmitter {
                                 connectionClosed = true;
                                 handle.close();
                                 this._connections.delete(handle);
-                                this._connectionsCount = Math.max(0, this._connectionsCount - 1);
+                                this._connectionsCount = Math.max(
+                                    0,
+                                    this._connectionsCount - 1
+                                );
                                 objectPool.releaseParser(parser);
+
                                 return;
                             }
                         }
@@ -876,7 +955,7 @@ export class Server extends TinyEmitter {
     _processBatch() {
         this._processingBatch = false;
         const batch = this._requestBatch.splice(0, BATCH_SIZE);
-        
+
         for (const { req, res } of batch) {
             try {
                 // Emit the request event
@@ -900,40 +979,63 @@ export class Server extends TinyEmitter {
 
     _isCommonConnectionError(err) {
         const msg = err.message || '';
-        
-        return msg.includes('ECONNRESET') || 
-               msg.includes('EPIPE') || 
-               msg.includes('ECONNABORTED') ||
-               msg.includes('EINVAL');
+
+        return (
+            msg.includes('ECONNRESET') ||
+      msg.includes('EPIPE') ||
+      msg.includes('ECONNABORTED') ||
+      msg.includes('EINVAL')
+        );
     }
 
     _isCommonSocketError(err) {
         const msg = err.message || '';
-        
-        return msg.includes('ECONNRESET') || 
-               msg.includes('EPIPE') || 
-               msg.includes('ECONNABORTED') ||
-               msg.includes('EINVAL');
+
+        return (
+            msg.includes('ECONNRESET') ||
+      msg.includes('EPIPE') ||
+      msg.includes('ECONNABORTED') ||
+      msg.includes('EINVAL')
+        );
     }
-    
+
     get maxConnections() {
         return this._maxConnections;
     }
-    
+
     set maxConnections(value) {
         this._maxConnections = value;
     }
-    
+
     get timeout() {
         return this._timeout;
     }
-    
+
     set timeout(value) {
         this._timeout = value;
     }
-    
+
     get connections() {
         return this._connectionsCount;
+    }
+
+    // Add address method for better compatibility
+    address() {
+        if (!this._server || !this._listening) {
+            return null;
+        }
+
+        try {
+            const addr = this._server.getsockname();
+
+            return {
+                port: addr.port,
+                family: addr.ip.includes(':') ? 'IPv6' : 'IPv4',
+                address: addr.ip,
+            };
+        } catch (err) {
+            return null;
+        }
     }
 }
 
