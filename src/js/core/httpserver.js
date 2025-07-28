@@ -74,6 +74,11 @@ class TinyEmitter {
 
         return true;
     }
+    
+    removeAllListeners() {
+        this._events = Object.create(null);
+        return this;
+    }
 }
 
 // Use queueMicrotask if available, otherwise fallback to setImmediate
@@ -158,6 +163,89 @@ const objectPool = {
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+// Status code to message mapping
+const STATUS_CODES = {
+  100: 'Continue',
+  101: 'Switching Protocols',
+  102: 'Processing',
+  103: 'Early Hints',
+  200: 'OK',
+  201: 'Created',
+  202: 'Accepted',
+  203: 'Non-Authoritative Information',
+  204: 'No Content',
+  205: 'Reset Content',
+  206: 'Partial Content',
+  207: 'Multi-Status',
+  208: 'Already Reported',
+  226: 'IM Used',
+  300: 'Multiple Choices',
+  301: 'Moved Permanently',
+  302: 'Found',
+  303: 'See Other',
+  304: 'Not Modified',
+  305: 'Use Proxy',
+  307: 'Temporary Redirect',
+  308: 'Permanent Redirect',
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  402: 'Payment Required',
+  403: 'Forbidden',
+  404: 'Not Found',
+  405: 'Method Not Allowed',
+  406: 'Not Acceptable',
+  407: 'Proxy Authentication Required',
+  408: 'Request Timeout',
+  409: 'Conflict',
+  410: 'Gone',
+  411: 'Length Required',
+  412: 'Precondition Failed',
+  413: 'Payload Too Large',
+  414: 'URI Too Long',
+  415: 'Unsupported Media Type',
+  416: 'Range Not Satisfiable',
+  417: 'Expectation Failed',
+  418: 'I\'m a Teapot',
+  421: 'Misdirected Request',
+  422: 'Unprocessable Entity',
+  423: 'Locked',
+  424: 'Failed Dependency',
+  425: 'Too Early',
+  426: 'Upgrade Required',
+  428: 'Precondition Required',
+  429: 'Too Many Requests',
+  431: 'Request Header Fields Too Large',
+  451: 'Unavailable For Legal Reasons',
+  500: 'Internal Server Error',
+  501: 'Not Implemented',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+  505: 'HTTP Version Not Supported',
+  506: 'Variant Also Negotiates',
+  507: 'Insufficient Storage',
+  508: 'Loop Detected',
+  509: 'Bandwidth Limit Exceeded',
+  510: 'Not Extended',
+  511: 'Network Authentication Required'
+};
+
+// Common headers cache
+const COMMON_HEADERS = {
+    'content-type': 'Content-Type',
+    'content-length': 'Content-Length',
+    'connection': 'Connection',
+    'keep-alive': 'Keep-Alive',
+    'host': 'Host',
+    'user-agent': 'User-Agent',
+    'accept': 'Accept',
+    'accept-encoding': 'Accept-Encoding',
+    'accept-language': 'Accept-Language',
+    'cache-control': 'Cache-Control',
+    'date': 'Date',
+    'server': 'Server'
+};
+
 /**
  * IncomingMessage represents the HTTP request received by the server.
  * This is similar to Node.js's http.IncomingMessage.
@@ -207,7 +295,7 @@ export class ServerResponse extends TinyEmitter {
         this.headersSent = false;
         this.finished = false;
         this.statusCode = 200;
-        this.statusMessage = 'OK';
+        this.statusMessage = STATUS_CODES[200];
         this.headers = Object.create(null);
         this._bodyChunks = [];
         this._bodyLength = 0;
@@ -219,13 +307,16 @@ export class ServerResponse extends TinyEmitter {
             throw new Error('Headers already sent');
         }
         
-        this.headers[name] = value;
+        // Normalize header name
+        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+        this.headers[normalizedName] = value;
         
         return this;
     }
 
     getHeader(name) {
-        return this.headers[name];
+        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+        return this.headers[normalizedName];
     }
 
     removeHeader(name) {
@@ -233,7 +324,8 @@ export class ServerResponse extends TinyEmitter {
             throw new Error('Headers already sent');
         }
 
-        delete this.headers[name];
+        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+        delete this.headers[normalizedName];
         
         return this;
     }
@@ -244,6 +336,7 @@ export class ServerResponse extends TinyEmitter {
         }
 
         this.statusCode = statusCode;
+        this.statusMessage = STATUS_CODES[statusCode] || 'Unknown Status';
 
         if (typeof statusMessage === 'string') {
             this.statusMessage = statusMessage;
@@ -383,7 +476,7 @@ export class ServerResponse extends TinyEmitter {
                 writePromise
                     .then(() => {
                         // Release resources
-                        objectPool.releaseServerResponse(this);
+                        this._cleanup();
                         
                         // Close connection if not keep-alive
                         if (!this._shouldKeepAlive) {
@@ -393,7 +486,7 @@ export class ServerResponse extends TinyEmitter {
                     })
                     .catch(err => {
                         // Release resources
-                        objectPool.releaseServerResponse(this);
+                        this._cleanup();
                         
                         // Ignore common socket errors
                         if (!this._isCommonSocketError(err)) {
@@ -410,7 +503,7 @@ export class ServerResponse extends TinyEmitter {
             writePromise
                 .then(() => {
                     // Release resources
-                    objectPool.releaseServerResponse(this);
+                    this._cleanup();
                     
                     // Close connection if not keep-alive
                     if (!this._shouldKeepAlive) {
@@ -420,7 +513,7 @@ export class ServerResponse extends TinyEmitter {
                 })
                 .catch(err => {
                     // Release resources
-                    objectPool.releaseServerResponse(this);
+                    this._cleanup();
                     
                     // Ignore common socket errors
                     if (!this._isCommonSocketError(err)) {
@@ -430,11 +523,20 @@ export class ServerResponse extends TinyEmitter {
                 });
         } catch (err) {
             // Release resources
-            objectPool.releaseServerResponse(this);
+            this._cleanup();
             
             console.error('Failed to create response:', err);
             this.socket.close();
         }
+    }
+    
+    _cleanup() {
+        // Clear body chunks to free memory
+        this._bodyChunks.length = 0;
+        this._bodyLength = 0;
+        
+        // Release response object back to pool
+        objectPool.releaseServerResponse(this);
     }
 
     _isCommonSocketError(err) {
@@ -464,6 +566,9 @@ export class Server extends TinyEmitter {
         this._server = null;
         this._debug = !!options.debug;
         this._closed = false;
+        this._maxConnections = options.maxConnections || 0; // 0 means no limit
+        this._timeout = options.timeout || 120000; // 2 minutes default
+        this._connectionsCount = 0;
     }
 
     listen(port, hostname, backlog, callback) {
@@ -503,7 +608,20 @@ export class Server extends TinyEmitter {
                             break;
                         }
 
+                        // Check max connections limit
+                        if (this._maxConnections > 0 && this._connectionsCount >= this._maxConnections) {
+                            clientHandle.close();
+                            continue;
+                        }
+
                         this._connections.add(clientHandle);
+                        this._connectionsCount++;
+
+                        // Set connection timeout
+                        if (this._timeout > 0) {
+                            clientHandle.setKeepAlive(true, 1000);
+                            clientHandle.setNoDelay(true);
+                        }
 
                         // Handle HTTP requests on this connection
                         this._handleConnection(clientHandle);
@@ -565,6 +683,7 @@ export class Server extends TinyEmitter {
         }
 
         this._connections.clear();
+        this._connectionsCount = 0;
 
         // Close the server
         if (this._server) {
@@ -712,6 +831,7 @@ export class Server extends TinyEmitter {
                                 connectionClosed = true;
                                 handle.close();
                                 this._connections.delete(handle);
+                                this._connectionsCount = Math.max(0, this._connectionsCount - 1);
                                 objectPool.releaseParser(parser);
                                 return;
                             }
@@ -740,6 +860,7 @@ export class Server extends TinyEmitter {
                 }
 
                 this._connections.delete(handle);
+                this._connectionsCount = Math.max(0, this._connectionsCount - 1);
                 objectPool.releaseParser(parser);
             }
         };
@@ -764,6 +885,26 @@ export class Server extends TinyEmitter {
                msg.includes('EPIPE') || 
                msg.includes('ECONNABORTED') ||
                msg.includes('EINVAL');
+    }
+    
+    get maxConnections() {
+        return this._maxConnections;
+    }
+    
+    set maxConnections(value) {
+        this._maxConnections = value;
+    }
+    
+    get timeout() {
+        return this._timeout;
+    }
+    
+    set timeout(value) {
+        this._timeout = value;
+    }
+    
+    get connections() {
+        return this._connectionsCount;
     }
 }
 
