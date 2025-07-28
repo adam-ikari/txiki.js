@@ -4,14 +4,13 @@ import { alert, confirm, prompt } from './alert-confirm-prompt.js';
 import engine from './engine.js';
 import env from './env.js';
 import { open, makeDir, makeTempFile, remove, symlink } from './fs.js';
-import * as http from './httpserver.js';
+import { createServer } from './httpserver.js';
 import { lookup } from './lookup.js';
 import pathModule from './path.js';
 import { addSignalListener, removeSignalListener } from './signal.js';
 import { connect, listen } from './sockets.js';
 import { createStdin, createStdout, createStderr } from './stdio.js';
 import system from './system.js';
-
 
 // The "tjs" global.
 //
@@ -53,7 +52,7 @@ const exports = [
     'tmpDir',
     'utime',
     'version',
-    'watch'
+    'watch',
 ];
 
 for (const key of exports) {
@@ -69,19 +68,19 @@ Object.defineProperty(tjs, 'alert', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: alert
+    value: alert,
 });
 Object.defineProperty(tjs, 'confirm', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: confirm
+    value: confirm,
 });
 Object.defineProperty(tjs, 'prompt', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: prompt
+    value: prompt,
 });
 
 // Engine.
@@ -89,7 +88,7 @@ Object.defineProperty(tjs, 'engine', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: engine
+    value: engine,
 });
 
 // Environment.
@@ -97,7 +96,7 @@ Object.defineProperty(tjs, 'env', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: env
+    value: env,
 });
 
 // FS.
@@ -105,31 +104,31 @@ Object.defineProperty(tjs, 'open', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: open
+    value: open,
 });
 Object.defineProperty(tjs, 'makeDir', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: makeDir
+    value: makeDir,
 });
 Object.defineProperty(tjs, 'makeTempFile', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: makeTempFile
+    value: makeTempFile,
 });
 Object.defineProperty(tjs, 'remove', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: remove
+    value: remove,
 });
 Object.defineProperty(tjs, 'symlink', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: symlink
+    value: symlink,
 });
 
 // Signals.
@@ -138,13 +137,13 @@ if (!core.isWorker) {
         enumerable: true,
         configurable: false,
         writable: false,
-        value: addSignalListener
+        value: addSignalListener,
     });
     Object.defineProperty(tjs, 'removeSignalListener', {
         enumerable: true,
         configurable: false,
         writable: false,
-        value: removeSignalListener
+        value: removeSignalListener,
     });
 }
 
@@ -153,27 +152,27 @@ Object.defineProperty(tjs, 'connect', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: connect
+    value: connect,
 });
 Object.defineProperty(tjs, 'listen', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: listen
+    value: listen,
 });
 Object.defineProperty(tjs, 'lookup', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: lookup
+    value: lookup,
 });
 
 // HTTP server.
-Object.defineProperty(tjs, 'http', {
+Object.defineProperty(tjs, 'createServer', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: http
+    value: createServer,
 });
 
 // Stdio.
@@ -181,19 +180,19 @@ Object.defineProperty(tjs, 'stdin', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: createStdin()
+    value: createStdin(),
 });
 Object.defineProperty(tjs, 'stdout', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: createStdout()
+    value: createStdout(),
 });
 Object.defineProperty(tjs, 'stderr', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: createStderr()
+    value: createStderr(),
 });
 
 // System.
@@ -201,7 +200,7 @@ Object.defineProperty(tjs, 'system', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: system
+    value: system,
 });
 
 // Internal stuff needed by the runtime.
@@ -212,5 +211,5 @@ Object.defineProperty(globalThis, 'tjs', {
     enumerable: true,
     configurable: false,
     writable: false,
-    value: Object.freeze(tjs)
+    value: Object.freeze(tjs),
 });

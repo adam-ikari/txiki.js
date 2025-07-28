@@ -5,9 +5,9 @@
 import getopts from "tjs:getopts";
 import path from "tjs:path";
 
-const { createServer } = tjs.http;
+const { createServer, stat, readDir, readFile, args } = tjs;
 
-const options = getopts(tjs.args.slice(2), {
+const options = getopts(args.slice(2), {
   alias: {
     port: "p",
     dir: "d",
@@ -89,13 +89,13 @@ async function serveFile(filePath, res) {
 
   try {
     // Check if file exists and get stats
-    const stats = await tjs.stat(filePath);
+    const stats = await stat(filePath);
 
     if (stats.isDirectory) {
       // Try to serve index.html from directory
       const indexPath = path.join(filePath, "index.html");
       try {
-        await tjs.stat(indexPath);
+        await stat(indexPath);
         // 检查是否已经发送了响应头
         if (res.headersSent) {
           console.warn("Headers already sent, cannot serve index.html");
@@ -114,7 +114,7 @@ async function serveFile(filePath, res) {
     }
 
     // Read and serve the file
-    const content = await tjs.readFile(filePath);
+    const content = await readFile(filePath);
     const mimeType = getMimeType(filePath);
 
     // 在发送响应前检查是否已经发送过响应头
@@ -176,7 +176,7 @@ async function serveDirectoryListing(dirPath, res) {
 
   try {
     // 使用 readDir 并通过异步迭代获取文件列表
-    const dirIter = await tjs.readDir(dirPath);
+    const dirIter = await readDir(dirPath);
     const files = [];
     for await (const item of dirIter) {
       files.push(item.name);
@@ -205,7 +205,7 @@ async function serveDirectoryListing(dirPath, res) {
     for (const file of files) {
       const fullPath = path.join(dirPath, file);
       try {
-        const stats = await tjs.stat(fullPath);
+        const stats = await stat(fullPath);
         const isDir = stats.isDirectory;
         const size = isDir
           ? ""
