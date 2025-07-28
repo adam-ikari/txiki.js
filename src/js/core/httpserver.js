@@ -76,10 +76,87 @@ class TinyEmitter {
     }
 }
 
-// Polyfill for setImmediate
-const setImmediate = globalThis.setImmediate || function(fn) {
+// Use queueMicrotask if available, otherwise fallback to setImmediate
+const schedule = globalThis.queueMicrotask || globalThis.setImmediate || function(fn) {
     setTimeout(fn, 0);
 };
+
+// Object pools for reuse
+const objectPool = {
+    incomingMessages: [],
+    serverResponses: [],
+    parsers: [],
+    
+    getIncomingMessage(socket) {
+        const msg = this.incomingMessages.pop();
+        if (msg) {
+            msg.socket = socket;
+            msg.headers = Object.create(null);
+            msg.method = '';
+            msg.url = '';
+            msg.httpVersion = '1.1';
+            msg.httpVersionMajor = 1;
+            msg.httpVersionMinor = 1;
+            msg.complete = false;
+            msg._body = '';
+            return msg;
+        }
+        return new IncomingMessage(socket);
+    },
+    
+    releaseIncomingMessage(msg) {
+        if (this.incomingMessages.length < 32) { // Limit pool size
+            msg.removeAllListeners();
+            this.incomingMessages.push(msg);
+        }
+    },
+    
+    getServerResponse(socket) {
+        const res = this.serverResponses.pop();
+        if (res) {
+            res.socket = socket;
+            res.headersSent = false;
+            res.finished = false;
+            res.statusCode = 200;
+            res.statusMessage = 'OK';
+            res.headers = Object.create(null);
+            res._bodyChunks.length = 0;
+            res._bodyLength = 0;
+            res._shouldKeepAlive = true;
+            return res;
+        }
+        return new ServerResponse(socket);
+    },
+    
+    releaseServerResponse(res) {
+        if (this.serverResponses.length < 32) { // Limit pool size
+            res.removeAllListeners();
+            this.serverResponses.push(res);
+        }
+    },
+    
+    getParser() {
+        const parser = this.parsers.pop();
+        if (parser) {
+            parser.reset();
+            return parser;
+        }
+        return new LLHttp('request', {
+            lenient: true,
+            allowCustomMethods: true,
+        });
+    },
+    
+    releaseParser(parser) {
+        if (this.parsers.length < 16) { // Limit pool size
+            this.parsers.push(parser);
+        }
+    }
+};
+
+// Shared TextEncoder/Decoder instances
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
 /**
  * IncomingMessage represents the HTTP request received by the server.
@@ -112,6 +189,11 @@ export class IncomingMessage extends TinyEmitter {
         // For requests, this doesn't apply, but keeping for compatibility
         return undefined;
     }
+    
+    removeAllListeners() {
+        this._events = Object.create(null);
+        return this;
+    }
 }
 
 /**
@@ -130,8 +212,6 @@ export class ServerResponse extends TinyEmitter {
         this._bodyChunks = [];
         this._bodyLength = 0;
         this._shouldKeepAlive = true;
-        // 移除 _processing 标志以完全兼容 Node.js 行为
-        // Node.js 不会自动结束响应，而是由开发者显式调用 end()
     }
 
     setHeader(name, value) {
@@ -193,7 +273,7 @@ export class ServerResponse extends TinyEmitter {
         let buffer;
         
         if (typeof chunk === 'string') {
-            buffer = new TextEncoder().encode(chunk);
+            buffer = textEncoder.encode(chunk);
         } else if (chunk instanceof Uint8Array) {
             buffer = chunk;
         } else {
@@ -204,7 +284,7 @@ export class ServerResponse extends TinyEmitter {
         this._bodyLength += buffer.length;
 
         if (callback) {
-            setImmediate(callback);
+            schedule(callback);
         }
 
         return true;
@@ -212,6 +292,7 @@ export class ServerResponse extends TinyEmitter {
 
     end(data, encoding, callback) {
         if (this.finished) {
+            if (callback) schedule(callback);
             return this;
         }
 
@@ -234,7 +315,7 @@ export class ServerResponse extends TinyEmitter {
         this._sendResponse();
 
         if (callback) {
-            setImmediate(callback);
+            schedule(callback);
         }
 
         this.emit('finish');
@@ -278,9 +359,6 @@ export class ServerResponse extends TinyEmitter {
                 }
             }
 
-            // Convert body to string
-            const bodyStr = new TextDecoder().decode(body);
-
             // Create HTTP response manually to ensure proper format
             let response = `HTTP/1.1 ${this.statusCode} ${this.statusMessage}\r\n`;
 
@@ -293,16 +371,47 @@ export class ServerResponse extends TinyEmitter {
             response += '\r\n';
 
             // Add body if present
-            if (bodyStr) {
-                response += bodyStr;
+            if (body.length > 0) {
+                // Directly concatenate Uint8Array instead of converting to string
+                const headersBytes = textEncoder.encode(response);
+                const responseBytes = new Uint8Array(headersBytes.length + body.length);
+                responseBytes.set(headersBytes, 0);
+                responseBytes.set(body, headersBytes.length);
+                
+                const writePromise = this.socket.write(responseBytes);
+                
+                writePromise
+                    .then(() => {
+                        // Release resources
+                        objectPool.releaseServerResponse(this);
+                        
+                        // Close connection if not keep-alive
+                        if (!this._shouldKeepAlive) {
+                            this.socket.close();
+                        }
+                        this.emit('close');
+                    })
+                    .catch(err => {
+                        // Release resources
+                        objectPool.releaseServerResponse(this);
+                        
+                        // Ignore common socket errors
+                        if (!this._isCommonSocketError(err)) {
+                            console.error('Failed to write response:', err);
+                        }
+                        this.socket.close();
+                    });
+                return;
             }
 
-            const encoded = new TextEncoder().encode(response);
-
+            const encoded = textEncoder.encode(response);
             const writePromise = this.socket.write(encoded);
 
             writePromise
                 .then(() => {
+                    // Release resources
+                    objectPool.releaseServerResponse(this);
+                    
                     // Close connection if not keep-alive
                     if (!this._shouldKeepAlive) {
                         this.socket.close();
@@ -310,6 +419,9 @@ export class ServerResponse extends TinyEmitter {
                     this.emit('close');
                 })
                 .catch(err => {
+                    // Release resources
+                    objectPool.releaseServerResponse(this);
+                    
                     // Ignore common socket errors
                     if (!this._isCommonSocketError(err)) {
                         console.error('Failed to write response:', err);
@@ -317,6 +429,9 @@ export class ServerResponse extends TinyEmitter {
                     this.socket.close();
                 });
         } catch (err) {
+            // Release resources
+            objectPool.releaseServerResponse(this);
+            
             console.error('Failed to create response:', err);
             this.socket.close();
         }
@@ -329,6 +444,11 @@ export class ServerResponse extends TinyEmitter {
                msg.includes('EPIPE') || 
                msg.includes('ECONNABORTED') ||
                msg.includes('EINVAL');
+    }
+    
+    removeAllListeners() {
+        this._events = Object.create(null);
+        return this;
     }
 }
 
@@ -343,9 +463,14 @@ export class Server extends TinyEmitter {
         this._listening = false;
         this._server = null;
         this._debug = !!options.debug;
+        this._closed = false;
     }
 
     listen(port, hostname, backlog, callback) {
+        if (this._closed) {
+            throw new Error('Server has been closed');
+        }
+        
         if (typeof hostname === 'function') {
             callback = hostname;
             hostname = undefined;
@@ -370,11 +495,11 @@ export class Server extends TinyEmitter {
         const handleConnection = async () => {
             try {
                 // eslint-disable-next-line no-constant-condition
-                while (true) {
+                while (!this._closed) {
                     try {
                         const clientHandle = await this._server.accept();
 
-                        if (!clientHandle) {
+                        if (!clientHandle || this._closed) {
                             break;
                         }
 
@@ -383,6 +508,10 @@ export class Server extends TinyEmitter {
                         // Handle HTTP requests on this connection
                         this._handleConnection(clientHandle);
                     } catch (err) {
+                        if (this._closed) {
+                            break;
+                        }
+                        
                         // Ignore common connection errors but log others
                         if (!this._isCommonConnectionError(err)) {
                             console.error('Connection error:', err);
@@ -395,8 +524,10 @@ export class Server extends TinyEmitter {
                     }
                 }
             } catch (err) {
-                console.error('Server fatal error:', err);
-                this.close();
+                if (!this._closed) {
+                    console.error('Server fatal error:', err);
+                    this.close();
+                }
             }
         };
 
@@ -407,7 +538,7 @@ export class Server extends TinyEmitter {
         this.emit('listening');
 
         if (callback) {
-            setImmediate(callback);
+            schedule(callback);
         }
 
         return this;
@@ -416,12 +547,13 @@ export class Server extends TinyEmitter {
     close(callback) {
         if (!this._listening) {
             if (callback) {
-                setImmediate(() => callback(new Error('Not running')));
+                schedule(() => callback(new Error('Not running')));
             }
             return this;
         }
 
         this._listening = false;
+        this._closed = true;
 
         // Close all connections
         for (const connection of this._connections) {
@@ -444,7 +576,7 @@ export class Server extends TinyEmitter {
                 }
             });
         } else if (callback) {
-            setImmediate(callback);
+            schedule(callback);
         }
 
         return this;
@@ -452,10 +584,7 @@ export class Server extends TinyEmitter {
 
     _handleConnection(handle) {
         let buffer = '';
-        const parser = new LLHttp('request', {
-            lenient: true,
-            allowCustomMethods: true,
-        });
+        const parser = objectPool.getParser();
         let currentRequest = null;
         let currentResponse = null;
         let connectionClosed = false;
@@ -477,7 +606,7 @@ export class Server extends TinyEmitter {
                         }
 
                         // Convert chunk to string and add to buffer
-                        const chunk = new TextDecoder().decode(buf.subarray(0, nread));
+                        const chunk = textDecoder.decode(buf.subarray(0, nread));
                         buffer += chunk;
 
                         // Process as much as possible
@@ -494,8 +623,8 @@ export class Server extends TinyEmitter {
                                 const result = parser.getResult();
 
                                 if (result.complete) {
-                                    // Create request and response objects
-                                    currentRequest = new IncomingMessage(handle);
+                                    // Create request and response objects from pool
+                                    currentRequest = objectPool.getIncomingMessage(handle);
                                     currentRequest.headers = result.headers;
                                     currentRequest.method = result.method;
                                     currentRequest.url = result.url;
@@ -504,7 +633,7 @@ export class Server extends TinyEmitter {
                                     currentRequest.httpVersionMinor = result.httpMinor;
                                     currentRequest._body = result.body;
 
-                                    currentResponse = new ServerResponse(handle);
+                                    currentResponse = objectPool.getServerResponse(handle);
 
                                     // Determine if we should keep the connection alive
                                     const connectionHeader = (
@@ -529,17 +658,11 @@ export class Server extends TinyEmitter {
                                         if (this._requestListener) {
                                             this._requestListener(currentRequest, currentResponse);
                                         }
-
-                                        // Node.js 不会自动结束响应，移除 txiki.js 特有的自动结束机制
-                                        // 确保与 Node.js 行为完全兼容
                                     } catch (err) {
                                         // Ignore errors in request handlers but log them
                                         if (this._debug) {
                                             console.error('Request handler error:', err);
                                         }
-
-                                        // 与 Node.js 保持一致，不自动发送错误响应
-                                        // 开发者需要在自己的请求处理函数中处理错误
                                     }
 
                                     // Reset parser for next request if connection is kept alive
@@ -563,6 +686,9 @@ export class Server extends TinyEmitter {
                                         connectionClosed = true;
                                         break;
                                     }
+                                    
+                                    // Release request object back to pool
+                                    objectPool.releaseIncomingMessage(currentRequest);
                                 } else {
                                     // No complete message yet, break inner loop to read more data
                                     break;
@@ -586,6 +712,7 @@ export class Server extends TinyEmitter {
                                 connectionClosed = true;
                                 handle.close();
                                 this._connections.delete(handle);
+                                objectPool.releaseParser(parser);
                                 return;
                             }
                         }
@@ -613,6 +740,7 @@ export class Server extends TinyEmitter {
                 }
 
                 this._connections.delete(handle);
+                objectPool.releaseParser(parser);
             }
         };
 
