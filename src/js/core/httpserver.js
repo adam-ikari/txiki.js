@@ -193,7 +193,7 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 // Status code to message mapping
-export const STATUS_CODES = {
+const STATUS_CODES = {
     100: 'Continue',
     101: 'Switching Protocols',
     102: 'Processing',
@@ -297,8 +297,17 @@ export class IncomingMessage extends TinyEmitter {
         return this.socket;
     }
 
+    // Add client address information
+    get clientAddress() {
+        try {
+            return this.socket.getpeername();
+        } catch (err) {
+            return null;
+        }
+    }
+
     get statusCode() {
-    // For requests, this doesn't apply, but keeping for compatibility
+        // For requests, this doesn't apply, but keeping for compatibility
         return undefined;
     }
 
@@ -338,15 +347,28 @@ export class ServerResponse extends TinyEmitter {
         }
 
         // Normalize header name
-        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+        const normalizedName = COMMON_HEADERS[name] || name;
 
         this.headers[normalizedName] = value;
 
         return this;
     }
 
+    // Add setHeaders method for better compatibility
+    setHeaders(headers) {
+        if (this.headersSent) {
+            throw new Error('Headers already sent');
+        }
+
+        for (const [ name, value ] of Object.entries(headers)) {
+            this.setHeader(name, value);
+        }
+
+        return this;
+    }
+
     getHeader(name) {
-        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+        const normalizedName = COMMON_HEADERS[name] || name;
 
         return this.headers[normalizedName];
     }
@@ -356,7 +378,7 @@ export class ServerResponse extends TinyEmitter {
             throw new Error('Headers already sent');
         }
 
-        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+        const normalizedName = COMMON_HEADERS[name] || name;
 
         delete this.headers[normalizedName];
 
@@ -368,7 +390,7 @@ export class ServerResponse extends TinyEmitter {
     }
 
     hasHeader(name) {
-        const normalizedName = COMMON_HEADERS[name.toLowerCase()] || name;
+        const normalizedName = COMMON_HEADERS[name] || name;
 
         return this.headers[normalizedName] !== undefined;
     }
@@ -385,6 +407,15 @@ export class ServerResponse extends TinyEmitter {
             this.statusMessage = statusMessage;
         } else if (typeof statusMessage === 'object' && statusMessage !== null) {
             headers = statusMessage;
+        }
+
+        // Set default Connection header based on HTTP version
+        if (!this.headers['Connection'] && !this.headers['connection']) {
+            if (this.httpVersionMajor === 1 && this.httpVersionMinor === 1) {
+                this.setHeader('Connection', 'keep-alive');
+            } else if (this.httpVersionMajor === 1 && this.httpVersionMinor === 0) {
+                this.setHeader('Connection', 'close');
+            }
         }
 
         if (headers) {
@@ -463,16 +494,21 @@ export class ServerResponse extends TinyEmitter {
     }
 
     _sendResponse() {
-    // Ensure headers are sent
+        // Ensure headers are sent
         if (!this.headersSent) {
             // Set Content-Length if not already set
             if (!this.headers['Content-Length'] && !this.headers['content-length']) {
                 this.setHeader('Content-Length', this._bodyLength);
             }
 
-            // 设置 Connection 头部以支持 Keep-Alive
+            // Set Connection header according to HTTP/1.1 specification
             if (this._shouldKeepAlive) {
                 this.setHeader('Connection', 'keep-alive');
+                
+                // Set keep-alive timeout if not specified
+                if (!this.headers['Keep-Alive'] && !this.headers['keep-alive']) {
+                    this.setHeader('Keep-Alive', `timeout=${Math.floor(this._server._timeout / 1000)}`);
+                }
             } else {
                 this.setHeader('Connection', 'close');
             }
@@ -483,7 +519,7 @@ export class ServerResponse extends TinyEmitter {
         try {
             // Efficiently concatenate body chunks
             let body;
-
+            
             if (this._bodyChunks.length === 0) {
                 body = new Uint8Array(0);
             } else if (this._bodyChunks.length === 1) {
@@ -491,7 +527,7 @@ export class ServerResponse extends TinyEmitter {
             } else {
                 body = new Uint8Array(this._bodyLength);
                 let offset = 0;
-
+                
                 for (const chunk of this._bodyChunks) {
                     body.set(chunk, offset);
                     offset += chunk.length;
@@ -514,36 +550,32 @@ export class ServerResponse extends TinyEmitter {
                 // Directly concatenate Uint8Array instead of converting to string
                 const headersBytes = textEncoder.encode(response);
                 const responseBytes = new Uint8Array(headersBytes.length + body.length);
-
                 responseBytes.set(headersBytes, 0);
                 responseBytes.set(body, headersBytes.length);
-
+                
                 const writePromise = this.socket.write(responseBytes);
-
+                
                 writePromise
                     .then(() => {
                         // Release resources
                         this._cleanup();
-
+                        
                         // Close connection if not keep-alive
                         if (!this._shouldKeepAlive) {
                             this.socket.close();
                         }
-
                         this.emit('close');
                     })
                     .catch(err => {
                         // Release resources
                         this._cleanup();
-
+                        
                         // Ignore common socket errors
                         if (!this._isCommonSocketError(err)) {
                             console.error('Failed to write response:', err);
                         }
-
                         this.socket.close();
                     });
-
                 return;
             }
 
@@ -554,34 +586,32 @@ export class ServerResponse extends TinyEmitter {
                 .then(() => {
                     // Release resources
                     this._cleanup();
-
+                    
                     // Close connection if not keep-alive
                     if (!this._shouldKeepAlive) {
                         this.socket.close();
                     }
-
                     this.emit('close');
                 })
                 .catch(err => {
                     // Release resources
                     this._cleanup();
-
+                    
                     // Ignore common socket errors
                     if (!this._isCommonSocketError(err)) {
                         console.error('Failed to write response:', err);
                     }
-
                     this.socket.close();
                 });
         } catch (err) {
             // Release resources
             this._cleanup();
-
+            
             console.error('Failed to create response:', err);
             this.socket.close();
         }
     }
-
+    
     _cleanup() {
     // Clear body chunks to free memory
         this._bodyChunks.length = 0;
@@ -673,16 +703,16 @@ export class Server extends TinyEmitter {
                         }
 
                         // Check max connections limit
-                        if (
-                            this._maxConnections > 0 &&
-              this._connectionsCount >= this._maxConnections
-                        ) {
+                        if (this._maxConnections > 0 && this._connectionsCount >= this._maxConnections) {
                             clientHandle.close();
                             continue;
                         }
 
                         this._connections.add(clientHandle);
                         this._connectionsCount++;
+
+                        // Emit connection event
+                        this.emit('connection', clientHandle);
 
                         // Set connection timeout
                         if (this._timeout > 0) {
@@ -831,7 +861,7 @@ export class Server extends TinyEmitter {
                                         result.headers['Connection'] ||
                     result.headers['connection'] ||
                     ''
-                                    ).toLowerCase();
+                                    );
 
                                     currentResponse._shouldKeepAlive =
                     (result.httpMajor === 1 &&
@@ -876,11 +906,14 @@ export class Server extends TinyEmitter {
 
                                         // Reset parser for the next request
                                         parser.reset();
-
+                                        // Clear any parser errors from previous request
+                                        parser.error = null;
                                         // Continue listening for more requests on this connection
                                     } else {
                                         // If we shouldn't keep the connection alive, close after this request
                                         connectionClosed = true;
+                                        // Set proper Connection header for closing
+                                        currentResponse.setHeader('Connection', 'close');
                                         break;
                                     }
 

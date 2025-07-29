@@ -14,7 +14,7 @@ endif
 
 TJS=$(BUILD_DIR)/tjs
 QJSC=$(BUILD_DIR)/tjsc
-CMAKE?=cmake
+CMAKE?=${shell which cmake}
 STDLIB_MODULES=$(wildcard src/js/stdlib/*.js)
 ESBUILD?=npx esbuild
 ESBUILD_PARAMS_COMMON=--target=es2023 --platform=neutral --format=esm --main-fields=main,module
