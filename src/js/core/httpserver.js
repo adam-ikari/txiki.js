@@ -778,9 +778,35 @@ export class Server extends TinyEmitter {
         this.STATUS_CODES = STATUS_CODES;
         
         // 添加基于连接数的内存管理相关属性
-        this._lastGCTime = Date.now();
-        this._gcInterval = 10000; // 10秒最小GC间隔
-        this._gcConnectionThreshold = options.gcConnectionThreshold || 50; // 连接数阈值，默认50
+        this._connectionLimit = options.connectionLimit || 100; // 连接数限制，默认100
+        this._connectionsList = []; // 用于跟踪连接的顺序
+        this._disconnectCount = options.disconnectCount || 5; // 每次断开连接的数量，默认5个
+    }
+    
+    // 断开最旧的连接以控制连接数
+    _disconnectOldestConnections(count = this._disconnectCount) {
+        // 当连接数超过限制时，断开最旧的连接
+        const toRemove = Math.min(count, this._connectionsList.length - this._connectionLimit);
+        for (let i = 0; i < toRemove; i++) {
+            const oldestConnection = this._connectionsList.shift();
+            if (oldestConnection && !oldestConnection._closed) {
+                try {
+                    // 清理连接上的引用
+                    if (oldestConnection._currentRequest) {
+                        objectPool.releaseIncomingMessage(oldestConnection._currentRequest);
+                        delete oldestConnection._currentRequest;
+                    }
+                    if (oldestConnection._server) {
+                        delete oldestConnection._server;
+                    }
+                    oldestConnection.close();
+                    this._connections.delete(oldestConnection);
+                    this._connectionsCount = Math.max(0, this._connectionsCount - 1);
+                } catch (err) {
+                    // 忽略关闭连接时的错误
+                }
+            }
+        }
     }
     
     // 修改主动垃圾回收方法，基于连接数阈值触发
@@ -843,20 +869,24 @@ export class Server extends TinyEmitter {
                             break;
                         }
 
-                        // 检查连接数限制，如果超过则立即关闭新连接
-                        if (
-                            this._maxConnections > 0 &&
-                            this._connectionsCount >= this._maxConnections
-                        ) {
+                        // 检查连接数限制
+                        if (this._maxConnections > 0 && this._connectionsCount >= this._maxConnections) {
+                            // 如果达到最大连接数限制，直接关闭新连接
                             clientHandle.close();
                             continue;
                         }
 
                         this._connections.add(clientHandle);
                         this._connectionsCount++;
+                        
+                        // 添加连接到连接列表，用于跟踪连接顺序
+                        this._connectionsList.push(clientHandle);
 
-                        // 当连接数达到GC阈值时触发垃圾回收
-                        this._performGC();
+                        // 当连接数超过限制时，断开最旧的连接
+                        // 使用配置的断开连接数
+                        if (this._connectionsList.length > this._connectionLimit) {
+                            this._disconnectOldestConnections();
+                        }
 
                         // Set connection timeout
                         if (this._timeout > 0) {
@@ -988,14 +1018,11 @@ export class Server extends TinyEmitter {
         // Clear connections set immediately
         this._connections.clear();
         this._connectionsCount = 0;
+        // Clear connections list
+        this._connectionsList.length = 0;
 
         // Wait for all connections to close
         Promise.all(closePromises).then(() => {
-            // 强制垃圾回收
-            if (typeof gc !== 'undefined') {
-                gc();
-            }
-            
             // Close the server
             if (this._server) {
                 this._server.close(() => {
@@ -1182,6 +1209,11 @@ export class Server extends TinyEmitter {
                                     0,
                                     this._connectionsCount - 1
                                 );
+                                // 从连接列表中移除
+                                const index = this._connectionsList.indexOf(handle);
+                                if (index !== -1) {
+                                    this._connectionsList.splice(index, 1);
+                                }
 
                                 return;
                             }
@@ -1212,6 +1244,12 @@ export class Server extends TinyEmitter {
                 // 清理所有相关资源
                 this._connections.delete(handle);
                 this._connectionsCount = Math.max(0, this._connectionsCount - 1);
+
+                // 从连接列表中移除
+                const index = this._connectionsList.indexOf(handle);
+                if (index !== -1) {
+                    this._connectionsList.splice(index, 1);
+                }
                 
                 // 确保释放解析器
                 objectPool.releaseParser(parser);
