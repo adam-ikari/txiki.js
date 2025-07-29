@@ -463,17 +463,37 @@ export class ServerResponse extends TinyEmitter {
     }
 
     _sendResponse() {
-    // Ensure headers are sent
+        // Ensure headers are sent
         if (!this.headersSent) {
-            // Set Content-Length if not already set
-            if (!this.headers['Content-Length'] && !this.headers['content-length']) {
+            // Set Content-Length if not already set and we have a body
+            if (!this.headers['Content-Length'] && !this.headers['content-length'] && this._bodyLength > 0) {
                 this.setHeader('Content-Length', this._bodyLength);
             }
 
-            // 设置 Connection 头部以支持 Keep-Alive
-            if (this._shouldKeepAlive) {
-                this.setHeader('Connection', 'keep-alive');
-            } else {
+            // 根据HTTP版本和Connection头部正确设置Connection头部
+            if (this.socket._currentRequest) {
+                const req = this.socket._currentRequest;
+                const requestHttpVersion = `${req.httpVersionMajor}.${req.httpVersionMinor}`;
+                const connectionHeader = (req.headers['Connection'] || req.headers['connection'] || '').toLowerCase();
+                
+                // 正确实现HTTP/1.1的keep-alive机制
+                if (requestHttpVersion === '1.1') {
+                    // HTTP/1.1默认保持连接，除非明确指定Connection: close
+                    this._shouldKeepAlive = (connectionHeader !== 'close');
+                } else if (requestHttpVersion === '1.0') {
+                    // HTTP/1.0默认关闭连接，除非明确指定Connection: keep-alive
+                    this._shouldKeepAlive = (connectionHeader === 'keep-alive');
+                    if (this._shouldKeepAlive) {
+                        this.setHeader('Connection', 'keep-alive');
+                    }
+                } else {
+                    // 其他版本默认不保持连接
+                    this._shouldKeepAlive = false;
+                }
+            }
+
+            // 如果不保持连接，设置Connection: close头部
+            if (!this._shouldKeepAlive) {
                 this.setHeader('Connection', 'close');
             }
 
@@ -518,68 +538,64 @@ export class ServerResponse extends TinyEmitter {
                 responseBytes.set(headersBytes, 0);
                 responseBytes.set(body, headersBytes.length);
 
-                const writePromise = this.socket.write(responseBytes);
-
-                writePromise
-                    .then(() => {
-                        // Release resources
-                        this._cleanup();
-
-                        // Close connection if not keep-alive
-                        if (!this._shouldKeepAlive) {
-                            this.socket.close();
-                        }
-
-                        this.emit('close');
-                    })
-                    .catch(err => {
-                        // Release resources
-                        this._cleanup();
-
-                        // Ignore common socket errors
-                        if (!this._isCommonSocketError(err)) {
-                            console.error('Failed to write response:', err);
-                        }
-
-                        this.socket.close();
-                    });
-
+                // 使用单独的方法处理写入和连接状态
+                this._writeAndHandleConnection(responseBytes);
                 return;
             }
 
             const encoded = textEncoder.encode(response);
-            const writePromise = this.socket.write(encoded);
-
-            writePromise
-                .then(() => {
-                    // Release resources
-                    this._cleanup();
-
-                    // Close connection if not keep-alive
-                    if (!this._shouldKeepAlive) {
-                        this.socket.close();
-                    }
-
-                    this.emit('close');
-                })
-                .catch(err => {
-                    // Release resources
-                    this._cleanup();
-
-                    // Ignore common socket errors
-                    if (!this._isCommonSocketError(err)) {
-                        console.error('Failed to write response:', err);
-                    }
-
-                    this.socket.close();
-                });
+            // 使用单独的方法处理写入和连接状态
+            this._writeAndHandleConnection(encoded);
         } catch (err) {
             // Release resources
             this._cleanup();
 
             console.error('Failed to create response:', err);
-            this.socket.close();
+            try {
+                this.socket.close();
+            } catch (closeErr) {
+                // Ignore close errors
+            }
         }
+    }
+
+    /**
+     * 处理响应写入和连接状态管理
+     * @param {Uint8Array} data - 要写入的数据
+     */
+    _writeAndHandleConnection(data) {
+        // 使用Promise链而不是async/await来提高性能
+        this.socket.write(data)
+            .then(() => {
+                // Release resources
+                this._cleanup();
+
+                // 根据_keepAlive状态决定是否关闭连接
+                if (!this._shouldKeepAlive) {
+                    try {
+                        this.socket.close();
+                    } catch (err) {
+                        // Ignore close errors
+                    }
+                }
+
+                this.emit('close');
+            })
+            .catch(err => {
+                // Release resources
+                this._cleanup();
+
+                // Ignore common socket errors
+                if (!this._isCommonSocketError(err)) {
+                    console.error('Failed to write response:', err);
+                }
+
+                try {
+                    this.socket.close();
+                } catch (closeErr) {
+                    // Ignore close errors
+                }
+            });
     }
 
     _cleanup() {
@@ -775,9 +791,10 @@ export class Server extends TinyEmitter {
     _handleConnection(handle) {
         let buffer = '';
         const parser = objectPool.getParser();
-        let currentRequest = null;
-        let currentResponse = null;
         let connectionClosed = false;
+        let isProcessing = false;
+        let keepAliveTimeoutId = null;
+        let requestCount = 0;
 
         // Create a simple read loop
         const readLoop = async () => {
@@ -815,7 +832,7 @@ export class Server extends TinyEmitter {
 
                                 if (result.complete) {
                                     // Create request and response objects from pool
-                                    currentRequest = objectPool.getIncomingMessage(handle);
+                                    const currentRequest = objectPool.getIncomingMessage(handle);
                                     currentRequest.headers = result.headers;
                                     currentRequest.method = result.method;
                                     currentRequest.url = result.url;
@@ -824,22 +841,31 @@ export class Server extends TinyEmitter {
                                     currentRequest.httpVersionMinor = result.httpMinor;
                                     currentRequest._body = result.body;
 
-                                    currentResponse = objectPool.getServerResponse(handle);
+                                    // Store current request on handle for response usage
+                                    handle._currentRequest = currentRequest;
 
-                                    // Determine if we should keep the connection alive
+                                    const currentResponse = objectPool.getServerResponse(handle);
+                                    
+                                    // 根据HTTP RFC正确确定是否应该保持连接
                                     const connectionHeader = (
                                         result.headers['Connection'] ||
-                    result.headers['connection'] ||
-                    ''
+                                        result.headers['connection'] ||
+                                        ''
                                     ).toLowerCase();
 
-                                    currentResponse._shouldKeepAlive =
-                    (result.httpMajor === 1 &&
-                      result.httpMinor === 1 &&
-                      connectionHeader !== 'close') ||
-                    (result.httpMajor === 1 &&
-                      result.httpMinor === 0 &&
-                      connectionHeader === 'keep-alive');
+                                    // 正确实现HTTP/1.1的keep-alive机制
+                                    // HTTP/1.1默认保持连接，除非明确指定Connection: close
+                                    // HTTP/1.0默认关闭连接，除非明确指定Connection: keep-alive
+                                    if (result.httpMajor === 1 && result.httpMinor === 1) {
+                                        // HTTP/1.1
+                                        currentResponse._shouldKeepAlive = (connectionHeader !== 'close');
+                                    } else if (result.httpMajor === 1 && result.httpMinor === 0) {
+                                        // HTTP/1.0
+                                        currentResponse._shouldKeepAlive = (connectionHeader === 'keep-alive');
+                                    } else {
+                                        // 其他版本默认不保持连接
+                                        currentResponse._shouldKeepAlive = false;
+                                    }
 
                                     // Batch process requests for better CPU utilization
                                     this._requestBatch.push({
@@ -849,7 +875,7 @@ export class Server extends TinyEmitter {
 
                                     if (
                                         this._requestBatch.length >= BATCH_SIZE ||
-                    !currentResponse._shouldKeepAlive
+                                        !currentResponse._shouldKeepAlive
                                     ) {
                                         this._processBatch();
                                     } else if (!this._processingBatch) {
@@ -861,19 +887,6 @@ export class Server extends TinyEmitter {
 
                                     // Reset parser for next request if connection is kept alive
                                     if (currentResponse._shouldKeepAlive) {
-                                        // For HTTP/1.1, keep the connection open by default
-                                        // unless explicitly closed by the server
-                                        if (result.httpMajor === 1 && result.httpMinor === 1) {
-                                            // If no Connection header was specified, default to keep-alive
-                                            if (
-                                                !result.headers['Connection'] &&
-                        !result.headers['connection']
-                                            ) {
-                                                currentResponse._shouldKeepAlive = true;
-                                                currentResponse.setHeader('Connection', 'keep-alive');
-                                            }
-                                        }
-
                                         // Reset parser for the next request
                                         parser.reset();
 
@@ -883,9 +896,6 @@ export class Server extends TinyEmitter {
                                         connectionClosed = true;
                                         break;
                                     }
-
-                                    // Release request object back to pool
-                                    objectPool.releaseIncomingMessage(currentRequest);
                                 } else {
                                     // No complete message yet, break inner loop to read more data
                                     break;
@@ -894,8 +904,8 @@ export class Server extends TinyEmitter {
                                 // Handle parse errors
                                 if (this._debug) {
                                     const shouldLog =
-                    !err.message.includes('HPE_INVALID_METHOD') &&
-                    !err.message.includes('HPE_INVALID_VERSION');
+                                        !err.message.includes('HPE_INVALID_METHOD') &&
+                                        !err.message.includes('HPE_INVALID_VERSION');
 
                                     if (shouldLog) {
                                         console.error(
@@ -970,9 +980,18 @@ export class Server extends TinyEmitter {
                 if (this._debug) {
                     console.error('Request handler error:', err);
                 }
-            } finally {
-                // Release request object back to pool
-                objectPool.releaseIncomingMessage(req);
+                
+                // 出错时确保响应被发送
+                try {
+                    if (!res.headersSent) {
+                        res.statusCode = 500;
+                        res.statusMessage = 'Internal Server Error';
+                        res.setHeader('Content-Type', 'text/plain');
+                        res.end('Internal Server Error');
+                    }
+                } catch (resErr) {
+                    // Ignore errors when trying to send error response
+                }
             }
         }
     }
