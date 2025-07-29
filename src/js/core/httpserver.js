@@ -1,5 +1,7 @@
 // Batch processing for better CPU utilization
-const BATCH_SIZE = 16;
+// 减小批处理大小以减少内存峰值(从16减到4)
+const BATCH_SIZE = 4;
+
 /**
  * HTTP Server implementation for txiki.js using TCP sockets and llhttp parser
  * Following Node.js API style conventions
@@ -122,10 +124,46 @@ const objectPool = {
     },
 
     releaseIncomingMessage(msg) {
-        if (this.incomingMessages.length < 32) {
-            // Limit pool size
-            msg.removeAllListeners();
+        // 大幅减小池大小以更积极地控制内存(从32减到8)
+        if (this.incomingMessages.length < 8) {
+            // 清理可能的循环引用
+            if (msg.socket) {
+                // 删除对当前请求的引用
+                if (msg.socket._currentRequest === msg) {
+                    delete msg.socket._currentRequest;
+                }
+                msg.socket = null;
+            }
+            
+            // 清理请求体
+            msg._body = '';
+            
+            // 清理头部信息
+            msg.headers = Object.create(null);
+            
+            // 清理事件监听器
+            try {
+                msg.removeAllListeners();
+            } catch (e) {
+                // 忽略错误
+            }
+            
             this.incomingMessages.push(msg);
+        } else {
+            // 如果池已满，确保清理所有引用
+            if (msg.socket) {
+                if (msg.socket._currentRequest === msg) {
+                    delete msg.socket._currentRequest;
+                }
+                msg.socket = null;
+            }
+            msg._body = '';
+            msg.headers = Object.create(null);
+            try {
+                msg.removeAllListeners();
+            } catch (e) {
+                // 忽略错误
+            }
         }
     },
 
@@ -150,10 +188,70 @@ const objectPool = {
     },
 
     releaseServerResponse(res) {
-        if (this.serverResponses.length < 32) {
-            // Limit pool size
-            res.removeAllListeners();
+        // 大幅减小池大小以更积极地控制内存(从32减到8)
+        if (this.serverResponses.length < 8) {
+            // 清理可能的循环引用
+            if (res.socket) {
+                // 删除对请求的引用
+                if (res.socket._currentRequest) {
+                    objectPool.releaseIncomingMessage(res.socket._currentRequest);
+                    delete res.socket._currentRequest;
+                }
+                res.socket = null;
+            }
+            
+            // 清理响应体数据
+            res._bodyChunks.length = 0;
+            res._bodyLength = 0;
+            
+            // 清理头部信息
+            res.headers = Object.create(null);
+            
+            // 重置状态
+            res.headersSent = false;
+            res.finished = false;
+            res.statusCode = 200;
+            res.statusMessage = 'OK';
+            res._shouldKeepAlive = true;
+            
+            // 清理事件监听器
+            try {
+                res.removeAllListeners();
+            } catch (e) {
+                // 忽略错误
+            }
+            
             this.serverResponses.push(res);
+        } else {
+            // 如果池已满，确保清理所有引用
+            if (res.socket) {
+                if (res.socket._currentRequest) {
+                    objectPool.releaseIncomingMessage(res.socket._currentRequest);
+                    delete res.socket._currentRequest;
+                }
+                res.socket = null;
+            }
+            
+            // 清理响应体数据
+            res._bodyChunks.length = 0;
+            res._bodyLength = 0;
+            
+            // 清理头部信息
+            res.headers = Object.create(null);
+            
+            // 重置状态
+            res.headersSent = false;
+            res.finished = false;
+            res.statusCode = 200;
+            res.statusMessage = 'OK';
+            res._shouldKeepAlive = true;
+            
+            // 清理事件监听器
+            try {
+                res.removeAllListeners();
+            } catch (e) {
+                // 忽略错误
+            }
         }
     },
 
@@ -161,7 +259,15 @@ const objectPool = {
         const parser = this.parsers.pop();
 
         if (parser) {
-            parser.reset();
+            try {
+                parser.reset();
+            } catch (e) {
+                // 如果重置失败，创建新的解析器
+                return new LLHttp('request', {
+                    lenient: true,
+                    allowCustomMethods: true,
+                });
+            }
 
             return parser;
         }
@@ -173,9 +279,15 @@ const objectPool = {
     },
 
     releaseParser(parser) {
-        if (this.parsers.length < 16) {
-            // Limit pool size
-            this.parsers.push(parser);
+        // 大幅减小池大小以更积极地控制内存(从16减到4)
+        if (this.parsers.length < 4) {
+            try {
+                parser.reset();
+                this.parsers.push(parser);
+            } catch (e) {
+                // 如果重置失败，不将解析器放回池中
+                // 这样会在下次需要时创建新的解析器
+            }
         }
     },
 };
@@ -604,9 +716,19 @@ export class ServerResponse extends TinyEmitter {
     }
 
     _cleanup() {
-    // Clear body chunks to free memory
+        // Clear body chunks to free memory
         this._bodyChunks.length = 0;
         this._bodyLength = 0;
+
+        // Clear socket reference if it exists to prevent memory leaks
+        if (this.socket) {
+            // Remove the reference from socket to this response
+            if (this.socket._currentRequest === this) {
+                objectPool.releaseIncomingMessage(this.socket._currentRequest);
+                delete this.socket._currentRequest;
+            }
+            this.socket = null;
+        }
 
         // Release response object back to pool
         objectPool.releaseServerResponse(this);
@@ -654,8 +776,37 @@ export class Server extends TinyEmitter {
         this._processingBatch = false;
         // Make STATUS_CODES available on the server instance
         this.STATUS_CODES = STATUS_CODES;
+        
+        // 添加内存管理相关属性
+        this._lastGCTime = Date.now();
+        // 缩短GC间隔以更积极地管理内存(从30秒减到10秒)
+        this._gcInterval = 10000; // 10秒执行一次主动GC
     }
-
+    
+    // 添加主动垃圾回收方法
+    _performGC() {
+        const now = Date.now();
+        if (now - this._lastGCTime > this._gcInterval) {
+            // 清理空闲连接
+            this._cleanupIdleConnections();
+            
+            // 强制垃圾回收
+            if (typeof gc !== 'undefined') {
+                gc();
+            }
+            
+            // 更新上次GC时间
+            this._lastGCTime = now;
+        }
+    }
+    
+    // 清理空闲连接
+    _cleanupIdleConnections() {
+        // 在这个实现中，我们主要依靠定期检查和强制关闭
+        // 实际应用中可以跟踪连接活跃时间并关闭长期空闲的连接
+    }
+    
+    // 重写listen方法，添加连接数限制
     listen(port, hostname, backlog, callback) {
         if (this._closed) {
             throw new Error('Server has been closed');
@@ -693,10 +844,10 @@ export class Server extends TinyEmitter {
                             break;
                         }
 
-                        // Check max connections limit
+                        // 检查连接数限制，如果超过则立即关闭新连接
                         if (
                             this._maxConnections > 0 &&
-              this._connectionsCount >= this._maxConnections
+                            this._connectionsCount >= this._maxConnections
                         ) {
                             clientHandle.close();
                             continue;
@@ -726,7 +877,7 @@ export class Server extends TinyEmitter {
                         // Break loop on certain errors
                         if (
                             err.name === 'AbortError' ||
-              (err.message && err.message.includes('closed'))
+                            (err.message && err.message.includes('closed'))
                         ) {
                             break;
                         }
@@ -765,38 +916,113 @@ export class Server extends TinyEmitter {
         this._listening = false;
         this._closed = true;
 
-        // Close all connections
-        for (const connection of this._connections) {
+        // Close all connections with a timeout to prevent hanging
+        const connectionsToClose = Array.from(this._connections);
+        const closePromises = [];
+
+        for (const connection of connectionsToClose) {
             try {
-                connection.close();
+                // Create a promise for each connection close
+                const closePromise = new Promise((resolve) => {
+                    // 设置1秒超时强制关闭连接
+                    const timeout = setTimeout(() => {
+                        try {
+                            connection.close();
+                        } catch (err) {
+                            // Ignore errors when closing
+                        } finally {
+                            // 清理连接上的引用
+                            if (connection._currentRequest) {
+                                objectPool.releaseIncomingMessage(connection._currentRequest);
+                                delete connection._currentRequest;
+                            }
+                            if (connection._server) {
+                                delete connection._server;
+                            }
+                            resolve();
+                        }
+                    }, 1000);
+
+                    // 正常关闭连接
+                    try {
+                        // 清理连接上的引用
+                        if (connection._currentRequest) {
+                            objectPool.releaseIncomingMessage(connection._currentRequest);
+                            delete connection._currentRequest;
+                        }
+                        if (connection._server) {
+                            delete connection._server;
+                        }
+                        connection.close();
+                        clearTimeout(timeout);
+                        resolve();
+                    } catch (err) {
+                        clearTimeout(timeout);
+                        // 清理连接上的引用
+                        if (connection._currentRequest) {
+                            objectPool.releaseIncomingMessage(connection._currentRequest);
+                            delete connection._currentRequest;
+                        }
+                        if (connection._server) {
+                            delete connection._server;
+                        }
+                        resolve();
+                    }
+                });
+
+                closePromises.push(closePromise);
             } catch (err) {
-                // Ignore errors when closing
+                // 即使出现错误也要确保清理引用
+                if (connection._currentRequest) {
+                    objectPool.releaseIncomingMessage(connection._currentRequest);
+                    delete connection._currentRequest;
+                }
+                if (connection._server) {
+                    delete connection._server;
+                }
             }
         }
 
+        // Clear connections set immediately
         this._connections.clear();
         this._connectionsCount = 0;
 
-        // Close the server
-        if (this._server) {
-            this._server.close(() => {
-                this.emit('close');
+        // Wait for all connections to close
+        Promise.all(closePromises).then(() => {
+            // 强制垃圾回收
+            if (typeof gc !== 'undefined') {
+                gc();
+            }
+            
+            // Close the server
+            if (this._server) {
+                this._server.close(() => {
+                    this.emit('close');
 
-                if (callback) {
-                    callback();
-                }
-            });
-        } else if (callback) {
-            queueMicrotask(callback);
-        }
+                    if (callback) {
+                        callback();
+                    }
+                });
+            } else if (callback) {
+                queueMicrotask(callback);
+            }
+        });
 
         return this;
     }
 
     _handleConnection(handle) {
         let buffer = '';
-        const parser = objectPool.getParser();
+        let parser = objectPool.getParser();
         let connectionClosed = false;
+        let requestCount = 0;
+        // 进一步降低每个连接的最大请求数，从100降到20
+        const maxRequestsPerConnection = 20;
+        let lastActivityTime = Date.now();
+        const connectionTimeout = this._timeout;
+
+        // Store server reference on socket for cleanup access
+        handle._server = this;
 
         // Create a simple read loop
         const readLoop = async () => {
@@ -805,6 +1031,15 @@ export class Server extends TinyEmitter {
 
                 // eslint-disable-next-line no-constant-condition
                 while (!connectionClosed) {
+                    // 检查连接是否超时
+                    if (connectionTimeout > 0 && Date.now() - lastActivityTime > connectionTimeout) {
+                        connectionClosed = true;
+                        break;
+                    }
+                    
+                    // 更频繁地执行垃圾回收
+                    this._performGC();
+
                     try {
                         const nread = await handle.read(buf);
 
@@ -814,8 +1049,11 @@ export class Server extends TinyEmitter {
                             break;
                         }
 
+                        // 更新活动时间
+                        lastActivityTime = Date.now();
+
                         // Convert chunk to string and add to buffer
-                        const chunk = textDecoder.decode(buf.subarray(0, nread));
+                        const chunk = textDecoder.decode(buf.subarray(0, nread), { stream: true });
 
                         buffer += chunk;
 
@@ -833,6 +1071,12 @@ export class Server extends TinyEmitter {
                                 const result = parser.getResult();
 
                                 if (result.complete) {
+                                    // 限制每个连接的请求数量
+                                    if (++requestCount > maxRequestsPerConnection) {
+                                        connectionClosed = true;
+                                        break;
+                                    }
+                                    
                                     // Create request and response objects from pool
                                     const currentRequest = objectPool.getIncomingMessage(handle);
 
@@ -893,7 +1137,14 @@ export class Server extends TinyEmitter {
                                     // Reset parser for next request if connection is kept alive
                                     if (currentResponse._shouldKeepAlive) {
                                         // Reset parser for the next request
-                                        parser.reset();
+                                        try {
+                                            parser.reset();
+                                        } catch (resetErr) {
+                                            // If reset fails, we need to get a new parser
+                                            objectPool.releaseParser(parser);
+                                            // Create a new parser for the next request
+                                            parser = objectPool.getParser();
+                                        }
 
                                         // Continue listening for more requests on this connection
                                     } else {
@@ -929,7 +1180,6 @@ export class Server extends TinyEmitter {
                                     0,
                                     this._connectionsCount - 1
                                 );
-                                objectPool.releaseParser(parser);
 
                                 return;
                             }
@@ -957,9 +1207,28 @@ export class Server extends TinyEmitter {
                     // Ignore close errors
                 }
 
+                // 清理所有相关资源
                 this._connections.delete(handle);
                 this._connectionsCount = Math.max(0, this._connectionsCount - 1);
+                
+                // 确保释放解析器
                 objectPool.releaseParser(parser);
+                
+                // 确保释放当前请求对象
+                if (handle._currentRequest) {
+                    objectPool.releaseIncomingMessage(handle._currentRequest);
+                    delete handle._currentRequest;
+                }
+                
+                // 清理服务器引用
+                if (handle._server) {
+                    delete handle._server;
+                }
+                
+                // 强制垃圾回收
+                if (typeof gc !== 'undefined') {
+                    gc();
+                }
             }
         };
 
@@ -997,8 +1266,17 @@ export class Server extends TinyEmitter {
                 } catch (resErr) {
                     // Ignore errors when trying to send error response
                 }
+            } finally {
+                // 确保请求对象被释放回对象池
+                if (req.socket && req.socket._currentRequest === req) {
+                    delete req.socket._currentRequest;
+                }
+                objectPool.releaseIncomingMessage(req);
             }
         }
+        
+        // 定期触发垃圾回收
+        this._performGC();
     }
 
     _isCommonConnectionError(err) {
