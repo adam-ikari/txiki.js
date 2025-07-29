@@ -777,19 +777,18 @@ export class Server extends TinyEmitter {
         // Make STATUS_CODES available on the server instance
         this.STATUS_CODES = STATUS_CODES;
         
-        // 添加内存管理相关属性
+        // 添加基于连接数的内存管理相关属性
         this._lastGCTime = Date.now();
-        // 缩短GC间隔以更积极地管理内存(从30秒减到10秒)
-        this._gcInterval = 10000; // 10秒执行一次主动GC
+        this._gcInterval = 10000; // 10秒最小GC间隔
+        this._gcConnectionThreshold = options.gcConnectionThreshold || 50; // 连接数阈值，默认50
     }
     
-    // 添加主动垃圾回收方法
+    // 修改主动垃圾回收方法，基于连接数阈值触发
     _performGC() {
         const now = Date.now();
-        if (now - this._lastGCTime > this._gcInterval) {
-            // 清理空闲连接
-            this._cleanupIdleConnections();
-            
+        // 检查是否达到连接数阈值并且距离上次GC有一定时间间隔
+        if (this._connectionsCount >= this._gcConnectionThreshold && 
+            now - this._lastGCTime > this._gcInterval) {
             // 强制垃圾回收
             if (typeof gc !== 'undefined') {
                 gc();
@@ -855,6 +854,9 @@ export class Server extends TinyEmitter {
 
                         this._connections.add(clientHandle);
                         this._connectionsCount++;
+
+                        // 当连接数达到GC阈值时触发垃圾回收
+                        this._performGC();
 
                         // Set connection timeout
                         if (this._timeout > 0) {
@@ -1037,7 +1039,7 @@ export class Server extends TinyEmitter {
                         break;
                     }
                     
-                    // 更频繁地执行垃圾回收
+                    // 执行基于连接数的垃圾回收检查
                     this._performGC();
 
                     try {
@@ -1224,11 +1226,6 @@ export class Server extends TinyEmitter {
                 if (handle._server) {
                     delete handle._server;
                 }
-                
-                // 强制垃圾回收
-                if (typeof gc !== 'undefined') {
-                    gc();
-                }
             }
         };
 
@@ -1274,9 +1271,6 @@ export class Server extends TinyEmitter {
                 objectPool.releaseIncomingMessage(req);
             }
         }
-        
-        // 定期触发垃圾回收
-        this._performGC();
     }
 
     _isCommonConnectionError(err) {
