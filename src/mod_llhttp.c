@@ -446,8 +446,10 @@ static JSValue tjs_llhttp_reset(JSContext *ctx, JSValueConst this_val, int argc,
         return JS_EXCEPTION;
     }
     
-    llhttp_reset(&s->parser);
+    // 重置解析器前先清理结果数据
     tjs__llhttp_reset_result(s);
+    
+    llhttp_reset(&s->parser);
     s->result.headers = JS_NewObject(s->ctx);
     
     return JS_UNDEFINED;
@@ -546,6 +548,8 @@ static JSValue tjs_llhttp_create_response(JSContext *ctx, JSValueConst this_val,
                 if (!header_str) {
                     JS_FreeCString(ctx, key);
                     JS_FreeCString(ctx, value);
+                    JS_FreeValue(ctx, val);
+                    js_free(ctx, props);
                     goto fail;
                 }
                 response_str = header_str;
@@ -594,6 +598,8 @@ static JSValue tjs_llhttp_create_response(JSContext *ctx, JSValueConst this_val,
 
     response = JS_NewStringLen(ctx, response_str, response_len);
     free(response_str);
+    JS_FreeValue(ctx, headers);
+    JS_FreeValue(ctx, body);
     return response;
 
 fail:
